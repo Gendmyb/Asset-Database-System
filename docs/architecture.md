@@ -1333,3 +1333,449 @@ services:
 
 ### Phase 9: Testing
 - 集成测试、负载测试、Agent E2E (全平台)
+
+### Phase 10: Hardening & Operations (加固与运维)
+- 软删除机制 (deleted_at + 审计日志保护)
+- JSONB GIN 索引 (properties + metadata)
+- Agent enrollment token 注册流程
+- asset_snapshots 按月分区 + audit_log 归档策略
+- 健康检查端点 (/healthz, /readyz)
+- JWT refresh token 轮换策略
+- API 版本兼容策略 (Sunset header + deprecation)
+- 前端权限路由守卫
+
+---
+
+## 15. 补充设计 (架构加固)
+
+> 以下章节为架构评审后补充，解决原设计中的 8 个潜在问题。
+
+### 15.1 软删除机制
+
+**问题**: `assets` 表 `DELETE` 为物理删除，`audit_log` 的 `ON DELETE CASCADE` 导致误删资产时审计日志一同丢失。
+
+**方案**:
+
+```sql
+-- assets 表增加软删除字段
+ALTER TABLE assets.assets ADD COLUMN deleted_at TIMESTAMPTZ;
+CREATE INDEX idx_assets_deleted ON assets.assets (deleted_at) WHERE deleted_at IS NOT NULL;
+
+-- 所有查询默认过滤已删除记录 (Repository 层注入)
+-- SELECT ... FROM assets.assets WHERE deleted_at IS NULL AND ...
+
+-- audit_log 外键改为 SET NULL，保留审计痕迹
+ALTER TABLE assets.audit_log DROP CONSTRAINT audit_log_asset_id_fkey;
+ALTER TABLE assets.audit_log
+  ADD CONSTRAINT audit_log_asset_id_fkey
+  FOREIGN KEY (asset_id) REFERENCES assets.assets(id) ON DELETE SET NULL;
+```
+
+**删除流程**:
+1. `DELETE /assets/:id` → 设置 `deleted_at = now()`，不物理删除
+2. 已删除资产不出现在列表查询中 (Repository 层自动过滤 `deleted_at IS NULL`)
+3. 超过 90 天的软删除记录由定时任务物理清理 (需 super_admin 审批)
+4. 审计日志保留，`asset_id` 变为 NULL 但 `metadata` 中保存原始 ID
+
+### 15.2 JSONB 索引优化
+
+**问题**: `properties` 和 `metadata` 为 JSONB 列，缺少 GIN 索引，大数据量下按属性查询性能差。
+
+**方案**:
+
+```sql
+-- properties 列 GIN 索引 (jsonb_path_ops 更紧凑、更快)
+CREATE INDEX idx_assets_properties ON assets.assets
+  USING GIN (properties jsonb_path_ops) WHERE deleted_at IS NULL;
+
+-- metadata 列 GIN 索引
+CREATE INDEX idx_assets_metadata ON assets.assets
+  USING GIN (metadata jsonb_path_ops) WHERE deleted_at IS NULL;
+
+-- 常用查询路径表达式索引示例
+CREATE INDEX idx_assets_properties_license_vendor ON assets.assets
+  ((properties->>'vendor')) WHERE properties ? 'vendor';
+```
+
+**查询示例 (利用索引)**:
+```sql
+-- 查找特定厂商的许可证
+SELECT * FROM assets.assets WHERE properties @> '{"vendor": "Microsoft"}';
+
+-- 按 metadata 标签过滤
+SELECT * FROM assets.assets WHERE metadata @> '{"tag": "critical"}';
+```
+
+### 15.3 Agent Enrollment Token 注册流程
+
+**问题**: `POST /auth/register-agent` 仅靠硬件指纹 + Ed25519 密钥对，任何拿到 Agent 二进制的设备都能注册。
+
+**方案**: 增加一次性 enrollment token 机制。
+
+**数据库表**:
+```sql
+CREATE TABLE assets.enrollment_tokens (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    token       VARCHAR(128) UNIQUE NOT NULL,
+    created_by  UUID NOT NULL REFERENCES assets.users(id),
+    org_id      UUID NOT NULL REFERENCES assets.organizations(id),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    used_at     TIMESTAMPTZ,              -- NULL = 未使用
+    used_by_agent UUID REFERENCES assets.collection_agents(id),
+    max_uses    INTEGER NOT NULL DEFAULT 1,
+    use_count   INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+**注册流程**:
+```
+1. Admin 在 Web UI 生成 enrollment token (指定有效期、组织、最大使用次数)
+2. Admin 将 token 分发给设备管理员
+3. Agent 启动时携带 token:
+   POST /api/v1/auth/register-agent
+   Body: { enrollment_token: "xxx", fingerprint: "sha256:...", public_key: "ed25519:..." }
+4. 服务器验证:
+   - token 存在且未过期
+   - use_count < max_uses
+   - org_id 匹配
+5. 验证通过:
+   - 签发 mTLS 客户端证书 + JWT token
+   - use_count++, 记录 used_by_agent
+   - 若 use_count == max_uses → 标记 used_at
+6. 验证失败 → 返回 403, 不泄露具体原因
+```
+
+**API 变更**:
+```
+POST /api/v1/admin/enrollment-tokens        # 创建 token (admin+)
+GET  /api/v1/admin/enrollment-tokens        # 列表 (admin+)
+DELETE /api/v1/admin/enrollment-tokens/:id  # 撤销 token (admin+)
+```
+
+### 15.4 数据分区与归档策略
+
+**问题**: `asset_snapshots` 和 `audit_log` 为高增长表，无分区策略。百万资产 × 5分钟采集 = 288万条/天，snapshots 表快速膨胀。
+
+**方案 A: asset_snapshots 按月分区**
+
+```sql
+-- 改为分区表
+CREATE TABLE assets.asset_snapshots (
+    id          UUID NOT NULL DEFAULT gen_random_uuid(),
+    asset_id    UUID NOT NULL REFERENCES assets.assets(id) ON DELETE CASCADE,
+    agent_id    UUID NOT NULL REFERENCES assets.collection_agents(id),
+    snapshot    JSONB NOT NULL,
+    checksum    VARCHAR(64) NOT NULL,
+    is_delta    BOOLEAN NOT NULL DEFAULT false,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, created_at)
+) PARTITION BY RANGE (created_at);
+
+-- 初始分区
+CREATE TABLE assets.asset_snapshots_2026_07
+  PARTITION OF assets.asset_snapshots
+  FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
+
+CREATE TABLE assets.asset_snapshots_2026_08
+  PARTITION OF assets.asset_snapshots
+  FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
+```
+
+**自动分区维护 (定时 job)**:
+```go
+// 每月 25 号自动创建下月分区，删除 N 个月前的旧分区
+// 配置: retention_months (默认 3, 可配置)
+// 旧分区: DETACH PARTITION → 归档到冷存储 → DROP
+```
+
+**方案 B: audit_log 归档**
+
+```sql
+-- 归档表 (与 audit_log 结构一致)
+CREATE TABLE assets.audit_log_archive (LIKE assets.audit_log INCLUDING ALL);
+
+-- 定时归档 job (每天凌晨执行):
+-- 1. INSERT INTO audit_log_archive SELECT * FROM audit_log WHERE created_at < now() - INTERVAL '6 months';
+-- 2. DELETE FROM audit_log WHERE created_at < now() - INTERVAL '6 months';
+-- 3. VACUUM ANALYZE audit_log;
+```
+
+**分区/归档配置**:
+```yaml
+data_retention:
+  asset_snapshots:
+    hot_retention_months: 3      # 热数据保留 3 个月
+    archive_to_cold_storage: true # 超过 3 个月归档
+    drop_after_months: 12        # 12 个月后删除
+  audit_log:
+    hot_retention_months: 6      # 热数据保留 6 个月
+    archive_table: audit_log_archive
+    drop_archive_after_months: 24 # 归档表 24 个月后删除
+```
+
+### 15.5 健康检查端点
+
+**问题**: 部署架构缺少 `/healthz`、`/readyz` 端点，K8s/Docker 容器编排需要探针。
+
+**方案**:
+
+```
+GET /healthz  → 200 (进程存活，不检查依赖，轻量快速)
+GET /readyz   → 200 (依赖正常，可接收流量)
+              → 503 (依赖不可用，不应接收流量)
+```
+
+**实现**:
+```go
+// /healthz — 存活探针
+func healthzHandler(c *gin.Context) {
+    c.JSON(200, gin.H{"status": "ok"})
+}
+
+// /readyz — 就绪探针
+func readyzHandler(c *gin.Context) {
+    ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+    defer cancel()
+
+    checks := map[string]string{}
+
+    // PostgreSQL 检查
+    if err := db.Ping(ctx); err != nil {
+        checks["postgres"] = "fail"
+    } else {
+        checks["postgres"] = "ok"
+    }
+
+    // Redis 检查
+    if err := redis.Ping(ctx).Err(); err != nil {
+        checks["redis"] = "fail"
+    } else {
+        checks["redis"] = "ok"
+    }
+
+    allOK := true
+    for _, v := range checks {
+        if v != "ok" {
+            allOK = false
+            break
+        }
+    }
+
+    if allOK {
+        c.JSON(200, gin.H{"status": "ready", "checks": checks})
+    } else {
+        c.JSON(503, gin.H{"status": "not_ready", "checks": checks})
+    }
+}
+```
+
+**路由注册 (不经过 Auth 中间件)**:
+```go
+public := router.Group("/")
+public.GET("/healthz", healthzHandler)
+public.GET("/readyz", readyzHandler)
+```
+
+**Docker Compose 探针**:
+```yaml
+api-server:
+  healthcheck:
+    test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 10s
+```
+
+### 15.6 JWT Refresh Token 轮换策略
+
+**问题**: 文档提到 refresh token 在 Redis 中标记失效，但缺少有效期、轮换策略、并发刷新处理。
+
+**方案**:
+
+**Token 生命周期**:
+```
+access token:  15 分钟有效
+refresh token: 7 天有效
+```
+
+**轮换策略 (Refresh Token Rotation)**:
+```
+每次刷新:
+1. 客户端 POST /auth/refresh { refresh_token: "xxx" }
+2. 服务器验证 refresh token 有效性 (Redis 中存在 + 未过期)
+3. 签发新的 access token + 新的 refresh token
+4. 旧 refresh token 立即从 Redis 删除 (不可重用)
+5. 新 refresh token 写入 Redis: key=refresh:{user_id}:{token_id}, TTL=7天
+```
+
+**并发刷新处理**:
+```
+同一 refresh token 只能成功使用一次:
+1. 请求 A 和请求 B 同时用同一个 refresh token 刷新
+2. 请求 A 先到 → Redis GET + DEL (原子操作) → 成功 → 签发新 token
+3. 请求 B 后到 → Redis GET → key 不存在 → 返回 401 "refresh token already used"
+4. 客户端收到 401 → 重新登录
+```
+
+**Redis 实现 (原子操作)**:
+```go
+func (s *AuthService) Refresh(ctx context.Context, refreshToken string) (*TokenPair, error) {
+    // 原子获取并删除，防止并发重用
+    key := fmt.Sprintf("refresh:%s", refreshToken)
+    val, err := s.redis.GetDel(ctx, key).Result()
+    if err == redis.Nil {
+        return nil, apierror.NewUnauthorized("refresh token invalid or already used")
+    }
+    if err != nil {
+        return nil, err
+    }
+
+    // val 中存储 user_id, 解析后签发新 token 对
+    userID := val
+    return s.issueTokenPair(ctx, userID)
+}
+```
+
+**Redis Key 设计**:
+```
+refresh:{token_id}      → {user_id}   TTL=7天   (用于验证)
+session:{user_id}       → {token_id}  TTL=7天   (用于登出时批量撤销)
+blacklist:{access_jti}  → "revoked"   TTL=15min (access token 主动撤销)
+```
+
+### 15.7 API 版本兼容策略
+
+**问题**: 只有 `/api/v1/`，未定义版本升级时的兼容流程。
+
+**方案**:
+
+**兼容原则**:
+```
+1. 新版本 (v2) 发布后，v1 保持至少 6 个月兼容期
+2. v1 中标记 deprecated 的端点在响应头返回:
+   Sunset: Wed, 31 Dec 2026 23:59:59 GMT
+   Deprecation: true
+   Link: </api/v2/assets>; rel="successor-version"
+3. 版本变更日志: docs/CHANGELOG.md 记录每个版本的 breaking changes
+4. 向后兼容原则:
+   - 新增字段: 可选，不影响旧客户端
+   - 删除字段: 需 deprecation period (至少 3 个月)
+   - 修改字段类型: 视为 breaking change，需新版本
+```
+
+**Deprecation 中间件**:
+```go
+func DeprecationMiddleware(oldPath, newPath, sunsetDate string) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        c.Header("Deprecation", "true")
+        c.Header("Sunset", sunsetDate)
+        c.Header("Link", fmt.Sprintf("</api/v2%s>; rel=\"successor-version\"", newPath))
+        c.Next()
+    }
+}
+```
+
+**路由注册**:
+```go
+v1 := router.Group("/api/v1")
+v1.Use(DeprecationMiddleware("", "", "Wed, 31 Dec 2026 23:59:59 GMT"))
+// ... v1 路由
+
+v2 := router.Group("/api/v2")
+// ... v2 路由
+```
+
+### 15.8 前端权限路由守卫
+
+**问题**: 文档定义了 5 种角色，但前端路由表缺少明确的路由守卫设计。
+
+**方案**:
+
+**路由守卫映射**:
+```typescript
+const routeGuards: Record<string, UserRole[]> = {
+  '/admin/*':           ['super_admin'],
+  '/admin/users':       ['super_admin'],
+  '/admin/asset-types': ['super_admin'],
+  '/assets':            ['super_admin', 'admin', 'manager', 'viewer'],
+  '/assets/:id':        ['super_admin', 'admin', 'manager', 'viewer'],
+  '/agents':            ['super_admin', 'admin'],
+  '/agents/:id':        ['super_admin', 'admin'],
+  '/audit-log':         ['super_admin', 'admin', 'manager'],
+  '/dashboard':         ['super_admin', 'admin', 'manager', 'viewer'],
+  '/webhooks':          ['super_admin', 'admin'],
+  '/locations':         ['super_admin', 'admin', 'manager'],
+  '/organizations':     ['super_admin', 'admin'],
+};
+```
+
+**React 实现**:
+```tsx
+// RequireAuth 组件 — 路由守卫
+function RequireAuth({ allowedRoles, children }: {
+  allowedRoles: UserRole[];
+  children: React.ReactNode;
+}) {
+  const { user } = useAuthStore();
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!allowedRoles.includes(user.role)) {
+    return <Navigate to="/403" replace />;
+  }
+
+  return <>{children}</>;
+}
+
+// App.tsx 路由注册
+<Routes>
+  <Route path="/login" element={<Login />} />
+  <Route path="/403" element={<Forbidden />} />
+
+  <Route element={<RequireAuth allowedRoles={['super_admin', 'admin', 'manager', 'viewer']} />}>
+    <Route element={<AppShell />}>
+      <Route path="/dashboard" element={<Dashboard />} />
+      <Route path="/assets" element={<Assets />} />
+      <Route path="/assets/:id" element={<AssetDetailPage />} />
+    </Route>
+  </Route>
+
+  <Route element={<RequireAuth allowedRoles={['super_admin', 'admin']} />}>
+    <Route element={<AppShell />}>
+      <Route path="/agents" element={<Agents />} />
+      <Route path="/webhooks" element={<Webhooks />} />
+    </Route>
+  </Route>
+
+  <Route element={<RequireAuth allowedRoles={['super_admin']} />}>
+    <Route element={<AppShell />}>
+      <Route path="/admin/*" element={<Admin />} />
+    </Route>
+  </Route>
+</Routes>
+```
+
+**API 客户端 401/403 拦截**:
+```typescript
+// api/client.ts
+apiClient.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // access token 过期 → 尝试 refresh
+      // refresh 也失败 → 跳转 login
+      useAuthStore.getState().logout();
+      window.location.href = '/login';
+    }
+    if (error.response?.status === 403) {
+      // 权限不足 → 跳转 403 页面
+      window.location.href = '/403';
+    }
+    return Promise.reject(error);
+  }
+);
+```
