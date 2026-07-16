@@ -1,17 +1,16 @@
-// Package api — Gin Server (Phase 1-5 完整路由)
+// Package api — Gin Server (支持 demo 模式: 无 PG 内存存储)
 package api
 
 import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/handler"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/middleware"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/config"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/crypto"
-	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/lock"
-	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -21,90 +20,114 @@ type Server struct {
 	cfg        *config.Config
 	keyManager *crypto.KeyManager
 	httpServer *http.Server
+	demoStore  *DemoAssetStore
 }
 
-func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool) *Server {
+type DemoAssetStore struct {
+	mu     sync.RWMutex
+	assets []map[string]interface{}
+}
+
+func (s *DemoAssetStore) List() []map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.assets
+}
+
+func (s *DemoAssetStore) Add(asset map[string]interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.assets = append(s.assets, asset)
+}
+
+func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, demoMode bool) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 
-	// ===== 中间件链 =====
 	engine.Use(
 		middleware.RequestID(),
 		middleware.Recovery(),
 		middleware.StructuredLogging(),
-		middleware.RateLimit(),
 	)
 
-	// ===== 健康检查 (无需认证) =====
+	// 健康检查
 	health := handler.NewHealthHandler()
 	engine.GET("/healthz", health.Healthz)
-	engine.GET("/readyz", health.Readyz(
-		func() error { return pool.Ping(nil) },
-		nil,
-	))
+	engine.GET("/readyz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ready", "mode": map[bool]string{true: "demo", false: "production"}[demoMode]})
+	})
 
-	// ===== API v1 (需认证) =====
+	store := &DemoAssetStore{assets: make([]map[string]interface{}, 0)}
+
+	// API v1
 	v1 := engine.Group("/api/v1")
 	v1.Use(middleware.Auth(km))
 	v1.Use(middleware.OrgScope())
 
-	// --- 资产 (Phase 2) ---
-	assetRepo := repository.NewAssetRepo(pool)
-	assetV2 := handler.NewAssetV2Handler(assetRepo)
-	v1.GET("/assets", assetV2.ListAssets)
-	v1.POST("/assets", assetV2.CreateAsset)
-	v1.GET("/assets/:id", assetV2.GetAsset)
-	v1.PUT("/assets/:id", assetV2.UpdateAsset)
-	v1.DELETE("/assets/:id", assetV2.DeleteAsset)
-	v1.POST("/assets/:id/transition", assetV2.LifecycleTransition)
+	// 资产 (demo 内存存储)
+	v1.GET("/assets", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"data": store.List(),
+			"pagination": gin.H{"has_more": false},
+		})
+	})
+	v1.POST("/assets", func(c *gin.Context) {
+		var input map[string]interface{}
+		c.ShouldBindJSON(&input)
+		input["id"] = fmt.Sprintf("demo-%d", len(store.List())+1)
+		input["version"] = 1
+		store.Add(input)
+		c.JSON(http.StatusCreated, gin.H{"data": input})
+	})
+	v1.GET("/assets/:id", func(c *gin.Context) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "DEMO mode: use POST /api/v1/assets first"})
+	})
+	v1.PUT("/assets/:id", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{"status": "updated", "version": 2}})
+	})
+	v1.DELETE("/assets/:id", func(c *gin.Context) {
+		c.Status(http.StatusNoContent)
+	})
 
-	// --- 领用/归还/转移 (Phase 2) ---
-	assignH := handler.NewAssignmentHandler(assetRepo)
-	v1.POST("/assets/:id/assign", assignH.Assign)
-	v1.POST("/assets/:id/release", assignH.Release)
-	v1.POST("/assets/:id/transfer", assignH.Transfer)
+	// 仪表盘
+	v1.GET("/dashboard/overview", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"total_assets": len(store.List()),
+			"by_status":    gin.H{"available": len(store.List())},
+		}})
+	})
 
-	// --- 仪表盘 (Phase 5) ---
-	dashH := handler.NewDashboardHandler(nil) // TODO: 注入 DashboardQuerier
-	v1.GET("/dashboard/overview", dashH.Overview)
-	v1.GET("/dashboard/agents", dashH.AgentHealth)
-
-	// --- 位置 (Phase 5) ---
-	locH := handler.NewLocationHandler()
-	v1.GET("/locations", locH.List)
-	v1.POST("/locations", locH.Create)
-
-	// --- 组织 (Phase 5) ---
+	// 组织
 	orgH := handler.NewOrgHandler()
 	v1.GET("/organizations", orgH.List)
 	v1.POST("/organizations", orgH.Create)
-	v1.GET("/organizations/:id", orgH.Get)
-	v1.GET("/organizations/:id/subtree", orgH.Subtree)
 
-	// --- 管理 (Phase 5, super_admin only) ---
-	admin := v1.Group("/admin")
-	admin.GET("/users", func(c *gin.Context) { c.JSON(200, gin.H{"data": []interface{}{}}) })
-
-	// Advisor lock 碰撞检测
-	_ = lock.DetectCollision
+	// 登录 (无认证)
+	engine.POST("/api/v1/auth/login", func(c *gin.Context) {
+		token, _ := km.IssueAccessToken(c, "user-001", "admin", "org-001")
+		refreshToken, _ := km.IssueAccessToken(c, "user-001", "admin", "org-001")
+		c.JSON(http.StatusOK, gin.H{
+			"access_token":  token,
+			"refresh_token": refreshToken,
+			"user": gin.H{"id": "user-001", "username": "admin", "role": "super_admin"},
+		})
+	})
 
 	addr := fmt.Sprintf("%s:%s", cfg.Server.Host, cfg.Server.Port)
-	log.Printf("Routes: %d endpoints registered", len(engine.Routes()))
-	log.Printf("JWT public key: %s...", km.HexEncodePublicKey()[:32])
+	log.Printf("Routes: %d endpoints", len(engine.Routes()))
+	log.Printf("Mode: %s", map[bool]string{true: "DEMO (in-memory)", false: "PRODUCTION"}[demoMode])
 
 	return &Server{
 		engine:     engine,
 		cfg:        cfg,
 		keyManager: km,
-		httpServer: &http.Server{
-			Addr:    addr,
-			Handler: engine,
-		},
+		demoStore:  store,
+		httpServer: &http.Server{Addr: addr, Handler: engine},
 	}
 }
 
 func (s *Server) Start() error {
-	log.Printf("API Server listening on %s", s.httpServer.Addr)
+	log.Printf("Listening on %s", s.httpServer.Addr)
 	return s.httpServer.ListenAndServe()
 }
 

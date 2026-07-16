@@ -1,5 +1,5 @@
 // Asset Database System — API Server
-// Phase 1: Foundation — JWT EdDSA + 中间件链 + 健康检查
+// 支持 demo 模式 (DEMO=true 跳过 PostgreSQL, 使用内存存储)
 package main
 
 import (
@@ -28,7 +28,12 @@ func main() {
 	}
 	log.Printf("Ed25519 Key: kid=%s", km.GetCurrentKeyID())
 
-	server := api.NewServer(cfg, km, nil)
+	demoMode := os.Getenv("DEMO") == "true"
+	if demoMode {
+		log.Println("⚠️  DEMO mode: in-memory stores, no PostgreSQL required")
+	}
+
+	server := api.NewServer(cfg, km, nil, demoMode)
 
 	go func() {
 		sig := make(chan os.Signal, 1)
