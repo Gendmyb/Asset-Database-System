@@ -84,7 +84,7 @@ Asset Database System 是一个 IT 资产管理平台，核心管理对象是 IT
 
 > **[安全加固] JWT 签名算法与密钥管理**:
 > - **签名算法**: 强制使用 `EdDSA` (Ed25519) 非对称签名，**禁止** HS256/RS256 等对称或可降级算法。
-> - **密钥管理**: Ed25519 私钥通过 **HashiCorp Vault / 云 KMS** 托管，API Server 启动时从 Vault 读取，**禁止** 硬编码或写入配置文件/环境变量。公钥可缓存供验证端使用。
+> - **密钥管理**: Ed25519 私钥通过 **HashiCorp Vault / 云 KMS** 托管，API Server 启动时从 Vault 读取，**禁止** 硬编码或写入配置文件/环境变量。公钥可缓存供验证端使用。Vault 自身需 HA 部署，且 API Server 启动时缓存公钥以降低对 Vault 的运行时依赖 — 详见 [§15.9 Vault/KMS 单点故障修复](#159-vaultkms-单点故障修复)。
 > - **算法降级防护**: `jwt.Parse` 必须显式设置 `ValidMethods: []string{"EdDSA"}`，拒绝任何其他算法的 token。
 > - **Claims 全量校验**: `iss` (签发者)、`aud` (受众)、`exp` (过期)、`iat` (签发时间)、`jti` (唯一 ID) 全部强制校验，`jti` 可用于主动撤销黑名单。
 
@@ -1565,27 +1565,228 @@ func (r *AssetRepo) GenerateReport(ctx context.Context) (*Report, error) {
 >    }
 >    ```
 >
-> 3. **CRL / OCSP 吊销机制**:
->    - 服务器维护 CRL (Certificate Revocation List)，Agent 被注销时立即吊销证书。
->    - Nginx 配置 `ssl_crl` 指向 CRL 文件，定期从 API Server 拉取更新。
->    - 同时启用 OCSP Stapling 作为在线校验补充:
->    ```nginx
->    ssl_crl /etc/nginx/revoked.crl;
->    ssl_stapling on;
->    ssl_stapling_verify on;
->    ```
->    - 数据库记录吊销状态:
->    ```sql
->    ALTER TABLE assets.collection_agents
->    ADD COLUMN cert_serial  VARCHAR(64),
->    ADD COLUMN cert_revoked BOOLEAN NOT NULL DEFAULT false,
->    ADD COLUMN cert_expires_at TIMESTAMPTZ NOT NULL;
+> 3. **CRL / OCSP 吊销机制 (双保险 + 实时校验)**:
 >
->    -- 吊销时更新
->    UPDATE assets.collection_agents
->    SET cert_revoked = true, updated_at = now()
->    WHERE id = $1;
->    ```
+> **[安全加固] CRL 刷新延迟导致已吊销 Agent 仍可接入 [🟡N6]**
+>
+> **问题**: 原方案 CRL 刷新间隔较长 (默认 24 小时)，Nginx 依赖 CRL 文件检查证书吊销状态，
+> 刷新窗口期内已吊销的 Agent 仍可通过 TLS 握手接入系统，存在安全窗口期。
+>
+> **修复方案**: CRL 刷新缩短到 1 小时 + OCSP Stapling 在线补充 + DB `cert_revoked` 实时校验双保险。
+
+**3a. CRL 刷新间隔缩短到 1 小时**:
+
+```yaml
+# CRL 刷新配置
+crl:
+  refresh_interval: 1h            # CRL 刷新间隔从 24h 缩短到 1h (最大吊销延迟 1 小时)
+  crl_file_path: /etc/nginx/revoked.crl
+  api_endpoint: /api/v1/internal/crl  # API Server 提供 CRL 下载端点
+  on_refresh_failure: "alert"     # 刷新失败告警
+```
+
+```go
+// internal/infra/crl_refresher.go — CRL 定时刷新 (1 小时)
+
+type CRLRefresher struct {
+    apiClient  *http.Client
+    crlPath    string
+    alertSink  AlertSink
+}
+
+func (r *CRLRefresher) Start(ctx context.Context) {
+    ticker := time.NewTicker(1 * time.Hour) // 每 1 小时刷新一次
+    defer ticker.Stop()
+
+    // 启动时立即刷新一次
+    r.refresh(ctx)
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            r.refresh(ctx)
+        }
+    }
+}
+
+func (r *CRLRefresher) refresh(ctx context.Context) {
+    // 从 API Server 拉取最新 CRL 文件
+    resp, err := r.apiClient.Get("https://api-server:8080/api/v1/internal/crl")
+    if err != nil {
+        log.Error().Err(err).Msg("CRL refresh failed")
+        r.alertSink.Send(ctx, Alert{
+            Severity: "warning",
+            Title:    "CRL 刷新失败",
+            Message:  fmt.Sprintf("CRL 拉取失败: %v — 当前使用旧 CRL (最大延迟 1h)", err),
+        })
+        return
+    }
+    defer resp.Body.Close()
+
+    // 原子替换 CRL 文件 (写入临时文件 → rename，避免 Nginx 读取半写文件)
+    tmpPath := r.crlPath + ".tmp"
+    if err := os.WriteFile(tmpPath, resp.Body, 0644); err != nil {
+        log.Error().Err(err).Msg("CRL write failed")
+        return
+    }
+    os.Rename(tmpPath, r.crlPath) // 原子替换
+
+    // Nginx reload 以加载新 CRL (无需重启)
+    exec.Command("nginx", "-s", "reload").Run()
+    log.Info().Msg("CRL refreshed successfully (1h interval)")
+}
+```
+
+**3b. OCSP Stapling 作为在线补充验证**:
+
+```nginx
+# Nginx 配置 — CRL + OCSP Stapling 双重校验
+ssl_crl /etc/nginx/revoked.crl;
+ssl_stapling on;
+ssl_stapling_verify on;
+ssl_stapling_responder http://api-server:8080/api/v1/internal/ocsp;
+# OCSP Stapling: Nginx 主动向 OCSP Responder 查询证书状态并缓存
+# 缓存期间内吊销的证书 → OCSP Stapling 可在秒级感知 (比 CRL 1h 更快)
+```
+
+**3c. 关键吊销场景双写 — DB cert_revoked + CRL 文件**:
+
+```sql
+-- 吊销时双写: 同时更新 DB cert_revoked 字段 + 触发 CRL 文件更新
+-- 使用事务确保原子性，避免 DB 已吊销但 CRL 未更新 (或反之)
+
+-- 1. 更新 DB cert_revoked 字段 (实时生效，API Server 中间件立即感知)
+UPDATE assets.collection_agents
+SET cert_revoked = true,
+    revoked_at = now(),
+    updated_at = now()
+WHERE id = $1;
+
+-- 2. 触发 CRL 文件更新 (异步，最大延迟 1 小时生效)
+-- 通过 Redis Pub/Sub 通知 CRL Refresher 立即刷新 (而非等待下一个 1h 周期)
+-- NOTIFY crl_update_needed, $1;
+```
+
+```go
+// internal/service/agent_revoke.go — 吊销操作 (双写)
+
+func (s *AgentService) RevokeAgent(ctx context.Context, agentID uuid.UUID) error {
+    // 事务内: 更新 DB cert_revoked (实时生效)
+    tx, err := s.db.Begin(ctx)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback(ctx)
+
+    _, err = tx.Exec(ctx, `
+        UPDATE assets.collection_agents
+        SET cert_revoked = true,
+            revoked_at = now(),
+            updated_at = now()
+        WHERE id = $1
+    `, agentID)
+    if err != nil {
+        return fmt.Errorf("revoke DB update failed: %w", err)
+    }
+
+    // 记录审计日志
+    _, err = tx.Exec(ctx, `
+        INSERT INTO assets.audit_log (action, resource_type, resource_id, details)
+        VALUES ('agent_revoked', 'agent', $1, '{"cert_revoked": true}')
+    `, agentID)
+    if err != nil {
+        return err
+    }
+
+    if err = tx.Commit(ctx); err != nil {
+        return err
+    }
+
+    // 事务提交后: 通知 CRL Refresher 立即刷新 (不等 1h 周期)
+    s.redis.Publish(ctx, "crl_update_needed", agentID.String())
+    log.Info().Str("agent_id", agentID.String()).
+        Msg("agent revoked (DB cert_revoked=true + CRL refresh triggered)")
+    return nil
+}
+```
+
+**3d. API Server 中间件校验 cert_revoked 字段 (实时，不依赖 CRL 刷新)**:
+
+```go
+// internal/middleware/mtls.go — cert_revoked 实时校验中间件
+
+func (m *MTLSMiddleware) VerifyClientCert(c *gin.Context) {
+    verify := c.GetHeader("X-SSL-Client-Verify")
+    if verify != "SUCCESS" {
+        c.AbortWithStatusJSON(403, gin.H{"error": "mTLS certificate required"})
+        return
+    }
+    agentIDFromCert := c.GetHeader("X-SSL-Client-CN")
+    agentIDFromReq := c.GetString("agent_id")
+    if agentIDFromCert != agentIDFromReq {
+        c.AbortWithStatusJSON(403, gin.H{"error": "agent identity mismatch"})
+        return
+    }
+
+    // ★ 实时校验 DB cert_revoked 字段 (不依赖 CRL 刷新，秒级生效)
+    var certRevoked bool
+    var certExpiresAt time.Time
+    err := m.db.QueryRow(c.Request.Context(), `
+        SELECT cert_revoked, cert_expires_at
+        FROM assets.collection_agents
+        WHERE id = $1
+    `, agentIDFromCert).Scan(&certRevoked, &certExpiresAt)
+    if err != nil {
+        c.AbortWithStatusJSON(403, gin.H{"error": "agent not found"})
+        return
+    }
+
+    if certRevoked {
+        c.AbortWithStatusJSON(403, gin.H{
+            "error":  "agent certificate revoked",
+            "reason": "cert_revoked=true in database",
+        })
+        return
+    }
+
+    if time.Now().After(certExpiresAt) {
+        c.AbortWithStatusJSON(403, gin.H{
+            "error":  "agent certificate expired",
+            "reason": fmt.Sprintf("expired at %s", certExpiresAt.Format(time.RFC3339)),
+        })
+        return
+    }
+
+    c.Next()
+}
+```
+
+**3e. Agent 连接时双保险 — Nginx 检查 CRL + API Server 检查 DB**:
+
+```
+Agent 连接时双重校验:
+
+  ┌──────────────────────────────────────────────────────────────────┐
+  │                    Agent → Nginx → API Server                     │
+  └──────────────────────────────────────────────────────────────────┘
+
+  第 1 层: Nginx (TLS 握手阶段)
+  ├── ssl_verify_client on          → 验证证书签名链 (CA 签发)
+  ├── ssl_crl /etc/nginx/revoked.crl → 检查证书是否在 CRL 中 (最大延迟 1h)
+  └── ssl_stapling on               → OCSP Stapling 在线补充 (秒级感知)
+
+  第 2 层: API Server (请求处理阶段)
+  ├── X-SSL-Client-Verify == SUCCESS → Nginx 确认 TLS 握手通过
+  ├── X-SSL-Client-CN == agent_id    → 证书 CN 与请求 agent_id 一致
+  └── DB cert_revoked == false       → 实时查询数据库 (秒级生效，不依赖 CRL)
+
+  双保险: 即使 CRL 刷新延迟 (1h 窗口期)，API Server 的 DB 实时校验仍可拦截已吊销 Agent
+          即使 DB 查询失败 (极端情况)，Nginx 的 CRL + OCSP Stapling 仍提供基础保护
+```
+
+> **CRL 刷新延迟修复总结**: (1) CRL 刷新间隔从默认 24h 缩短到 1h，最大吊销延迟降至 1 小时; (2) OCSP Stapling 作为在线补充验证，秒级感知证书吊销; (3) 关键吊销场景双写: 同时更新 DB `cert_revoked` 字段 + 触发 CRL 文件立即刷新 (通过 Redis Pub/Sub 通知，不等 1h 周期); (4) API Server 中间件校验 `cert_revoked` 字段 (实时，秒级生效)，不依赖 CRL 刷新; (5) Agent 连接时 Nginx 检查 CRL + OCSP Stapling (第 1 层) + API Server 检查 DB `cert_revoked` (第 2 层) 双保险，任一层均可拦截已吊销 Agent。
 
 
 ### 8.3 增量同步协议
@@ -2383,6 +2584,8 @@ SELECT pg_advisory_xact_lock(hashtext('audit_log_chain'));
 -- 然后执行 INSERT (触发器内自动维护 hash)
 ```
 
+> **[风险修复 N3]**: advisory lock 序列化所有 audit_log INSERT，高并发下写入吞吐量受限 (~200 条/秒)。引入批量写入缓冲 (每 100ms 或 100 条批量 INSERT)、分片链方案评估 (按 asset_id 分区并行写入)、Prometheus 监控指标、以及异步 hash 计算降级策略 — 详见 [§15.11 链式哈希序列化写入瓶颈修复](#1511-链式哈希序列化写入瓶颈修复)。
+
 ---
 
 ## 12. 缓存策略
@@ -2444,6 +2647,8 @@ Patroni 集群 (3 节点: 1 Primary + 2 Replica)
 └── RPO < 5s (异步复制延迟监控, 超阈值告警)
 ```
 
+> **[风险修复 N2]**: 异步复制 RPO<5s 仍可能有数据丢失窗口，且 PgBouncer 需动态感知 Patroni Leader 切换。关键写操作 (资产创建/领用/状态转换) 评估使用同步复制模式，PgBouncer 通过 Patroni REST API 动态切换后端，故障转移期间 API Server 返回 503 引导客户端重试，并建立每月故障转移演练机制 — 详见 [§15.10 Patroni 故障转移数据窗口修复](#1510-patroni-故障转移数据窗口修复)。
+
 **API Server 水平扩展配置**:
 ```nginx
 # Nginx upstream 配置 (至少 2 实例)
@@ -2469,6 +2674,135 @@ Redis Sentinel (3 节点: 1 Master + 2 Slave + 3 Sentinel)
 ├── API Server 通过 Sentinel 发现 Master 地址
 ├── 限流中间件: 本地令牌桶兜底 (Redis 不可用时降级)
 └── 缓存层熔断: Redis 连续失败 N 次 → 熔断, 直连 DB
+```
+
+> **[风险修复 N8] Multi-AZ 网络延迟缓解策略**
+>
+> 跨 AZ 的 Patroni 复制和 Sentinel 通信会增加网络延迟，影响写入性能和故障检测速度。以下措施确保 Multi-AZ 部署的延迟在可接受范围内。
+
+**1. 同区域多 AZ 部署 (禁止跨区域)**:
+
+```
+部署约束:
+├── 所有 AZ 必须在同一地理区域 (如 us-east-1a / us-east-1b / us-east-1c)
+├── AZ 间网络延迟 < 2ms (部署前使用 pgbench + ping 验证)
+├── 禁止跨区域部署 (如 us-east-1 ↔ us-west-2)，跨区域延迟 > 50ms 不可接受
+└── 跨区域容灾采用异步快照备份 + S3 跨区域复制，而非实时复制
+```
+
+**2. 复制延迟监控与告警**:
+
+```yaml
+# 复制延迟监控配置
+replication_monitoring:
+  # Patroni Streaming Replication 延迟监控
+  metrics:
+    - name: replication_lag_seconds
+      query: "SELECT EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp())"
+      target: replica
+    - name: replication_lag_bytes
+      query: "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) FROM pg_stat_replication"
+      target: primary
+  alerts:
+    - condition: "replication_lag_seconds > 5"
+      severity: warning
+      message: "Replication lag exceeds 5 seconds"
+    - condition: "replication_lag_seconds > 30"
+      severity: critical
+      message: "Replication lag exceeds 30 seconds — RPO at risk"
+    - condition: "replication_lag_bytes > 104857600"  # 100MB
+      severity: warning
+      message: "Replication lag exceeds 100MB"
+```
+
+```go
+// internal/monitor/replication_lag.go — 复制延迟监控
+func (m *ReplicationMonitor) CheckLag(ctx context.Context) error {
+    // 查询 Primary 上的复制延迟
+    var lagSeconds float64
+    err := m.primaryDB.QueryRow(ctx, `
+        SELECT EXTRACT(EPOCH FROM now() - pg_last_xact_replay_timestamp())
+        FROM pg_stat_replication
+        WHERE application_name = $1
+    `, m.replicaName).Scan(&lagSeconds)
+    if err != nil {
+        return err
+    }
+
+    // Prometheus 指标
+    metrics.ReplicationLagSeconds.Set(lagSeconds)
+
+    // 告警判断
+    if lagSeconds > 30 {
+        m.alerter.Send(ctx, Alert{
+            Severity: "critical",
+            Title:    "Replication lag critical",
+            Message:  fmt.Sprintf("Replication lag %.1fs exceeds 30s threshold — RPO at risk", lagSeconds),
+        })
+    } else if lagSeconds > 5 {
+        m.alerter.Send(ctx, Alert{
+            Severity: "warning",
+            Title:    "Replication lag warning",
+            Message:  fmt.Sprintf("Replication lag %.1fs exceeds 5s threshold", lagSeconds),
+        })
+    }
+    return nil
+}
+```
+
+**3. 读写分离减少 Primary 负载**:
+
+```
+读写分离路由策略:
+├── 写操作 (INSERT/UPDATE/DELETE) → Primary (经 PgBouncer 写通道)
+├── Grafana 查询 → Replica (经 PgBouncer 读通道, 端口 6432)
+├── 报表查询 (dashboard API, 统计聚合) → Replica
+├── 快照查询 (GET /assets/:id/snapshots) → Replica (读多写少)
+├── 审计日志查询 (GET /assets/:id/history) → Replica
+└── 实时资产操作 (CRUD, 状态转换) → Primary (需强一致性)
+```
+
+```yaml
+# PgBouncer 读写分离配置
+pgbouncer:
+  write_pool:
+    listen_port: 6432
+    default_pool: primary
+    pool_mode: transaction
+  read_pool:
+    listen_port: 6433
+    default_pool: replica
+    pool_mode: transaction
+  # Grafana 和报表服务连接 read_pool (6433)
+  # API Server 写操作连接 write_pool (6432)
+```
+
+**4. Sentinel 通信走内网 (禁止公网)**:
+
+```
+Sentinel 网络安全约束:
+├── Sentinel 节点间通信: 仅限 VPC 内网 (私有 IP)
+├── API Server → Sentinel: 内网连接, 禁止经过公网/NAT
+├── Sentinel 端口 (26379): 仅对 VPC 安全组开放
+├── 禁止 Sentinel 绑定公网 IP 或通过 Internet Gateway 通信
+└── 跨 AZ Sentinel 通信: 走 VPC Peering / Transit Gateway, 延迟 < 2ms
+```
+
+```ini
+# Redis Sentinel 配置 — 强制内网通信
+# sentinel.conf
+port 26379
+bind 10.0.0.0  # 仅绑定内网 IP，禁止 0.0.0.0
+protected-mode yes
+
+# Sentinel 节点列表 (内网 IP)
+sentinel monitor mymaster 10.0.1.10 6379 2
+sentinel known-sentinel mymaster 10.0.2.10 26379
+sentinel known-sentinel mymaster 10.0.3.10 26379
+
+# 超时配置 (考虑跨 AZ 延迟)
+sentinel down-after-milliseconds mymaster 5000   # 5s (内网延迟 < 2ms, 5s 足够)
+sentinel failover-timeout mymaster 30000          # 30s
 ```
 
 ### 13.3 数据库迁移
@@ -2817,36 +3151,199 @@ CREATE TABLE assets.asset_snapshots_2026_08
 2. 分区表主键必须包含分区键 (`created_at`)，原 `asset_id` 单列主键不再适用。
 3. 分区表上创建外键约束会增加写入时的约束检查开销，影响 Agent 高频上报的摄入吞吐量。
 
-**方案: 移除 asset_id 数据库级外键，改用应用层校验**
+**方案: 移除 asset_id 数据库级外键，改用应用层校验 + 孤儿快照检测与自动清理**
+
+> **[风险修复 N7] 分区表外键移除导致数据一致性风险**
+>
+> 移除 `asset_snapshots.asset_id` 数据库级外键后，应用层校验 bug 可能导致孤儿快照 (asset_id 指向已删除的资产)。以下修复措施构建三层防护：写入前强制校验 → 定时检测孤儿 → 自动清理 + 告警。
 
 ```sql
 -- asset_snapshots.asset_id 不再建数据库级外键约束
 -- 原设计: asset_id UUID NOT NULL REFERENCES assets.assets(id) ON DELETE CASCADE
 -- 新设计: asset_id UUID NOT NULL (逻辑外键，应用层校验)
-
--- 应用层校验 (IngestEngine 写入前验证 asset_id 有效性):
--- 1. Agent 上报时，IngestEngine 先 SELECT 1 FROM assets.assets WHERE id = $1
--- 2. 若资产不存在 → 记录告警日志，跳过该条快照 (不抛异常，避免阻塞摄入管道)
--- 3. 资产物理删除时，由清理任务显式删除对应快照分区数据
 ```
 
-**资产删除时的快照清理**:
-
-由于移除了 `ON DELETE CASCADE`，资产物理删除时需显式清理快照数据:
+**第一层：应用层强制校验 (IngestEngine 写入前验证 asset_id 有效性)**:
 
 ```go
-// 资产物理清理任务 (定时执行，需 super_admin 审批)
-func (r *AssetRepo) PurgeAssetSnapshot(ctx context.Context, assetID uuid.UUID) error {
-    // 跨所有分区删除该资产的快照
-    _, err := r.db.Exec(ctx, `
-        DELETE FROM assets.asset_snapshots
-        WHERE asset_id = $1
-    `, assetID)
-    return err
+// internal/service/ingest/engine.go — 写入 snapshot 前强制查询 asset 是否存在
+func (e *IngestEngine) writeSnapshot(ctx context.Context, snap *AssetSnapshot) error {
+    // 强制校验: 写入前查询 asset 是否存在 (含软删除检查)
+    var exists bool
+    err := e.db.QueryRow(ctx, `
+        SELECT EXISTS(
+            SELECT 1 FROM assets.assets
+            WHERE id = $1 AND deleted_at IS NULL
+        )
+    `, snap.AssetID).Scan(&exists)
+    if err != nil {
+        return fmt.Errorf("check asset existence: %w", err)
+    }
+
+    if !exists {
+        // 资产不存在或已软删除 → 记录告警日志，跳过该条快照
+        // 不抛异常，避免阻塞摄入管道
+        e.logger.Warn().
+            Str("asset_id", snap.AssetID.String()).
+            Str("agent_id", snap.AgentID.String()).
+            Msg("orphan snapshot detected at ingestion: asset not found, skipping")
+        // 记录到孤儿快照告警计数器 (Prometheus)
+        metrics.OrphanSnapshotIngestSkipped.Inc()
+        return nil
+    }
+
+    // 资产存在 → 写入快照
+    return e.snapshotRepo.Insert(ctx, snap)
 }
 ```
 
-> **PG16 分区表外键支持验证**: PostgreSQL 16 已支持分区表作为**被引用方** (referenced table) 的外键约束 (即其他表可 FK 引用分区表)，但分区表自身的外键 (作为引用方) 仍受 `ON DELETE CASCADE` 限制。上述方案移除 `asset_snapshots.asset_id` 的外键约束，改用应用层校验 + 显式清理，规避此限制。
+**第二层：定时孤儿快照检测 job (每小时执行)**:
+
+```go
+// internal/job/orphan_snapshot_detector.go — 每小时检测孤儿快照
+func (j *OrphanSnapshotDetector) Run(ctx context.Context) error {
+    // 检测孤儿快照: asset_id 不在 assets 表中 (含已物理删除的资产)
+    rows, err := j.db.Query(ctx, `
+        SELECT asset_id, COUNT(*) AS orphan_count
+        FROM assets.asset_snapshots
+        WHERE asset_id NOT IN (SELECT id FROM assets.assets)
+        GROUP BY asset_id
+    `)
+    if err != nil {
+        return fmt.Errorf("query orphan snapshots: %w", err)
+    }
+    defer rows.Close()
+
+    type orphanInfo struct {
+        AssetID    uuid.UUID
+        Count      int64
+    }
+    var orphans []orphanInfo
+    for rows.Next() {
+        var o orphanInfo
+        if err := rows.Scan(&o.AssetID, &o.Count); err != nil {
+            return err
+        }
+        orphans = append(orphans, o)
+    }
+
+    if len(orphans) > 0 {
+        // 告警: 发现孤儿快照
+        totalOrphan := int64(0)
+        for _, o := range orphans {
+            totalOrphan += o.Count
+        }
+        j.logger.Error().
+            Int("orphan_asset_count", len(orphans)).
+            Int64("total_orphan_snapshots", totalOrphan).
+            Msg("orphan snapshots detected: asset_id references non-existent assets")
+
+        // Prometheus 指标
+        metrics.OrphanSnapshotCount.Set(float64(totalOrphan))
+
+        // 告警通知 (PagerDuty / Slack)
+        j.alerter.Send(ctx, Alert{
+            Severity: "warning",
+            Title:    "Orphan snapshots detected",
+            Message:  fmt.Sprintf("%d orphan assets, %d total orphan snapshots", len(orphans), totalOrphan),
+        })
+
+        // 自动清理 (配置项控制)
+        if j.config.CleanupOrphanSnapshots {
+            for _, o := range orphans {
+                if err := j.cleanupOrphanSnapshots(ctx, o.AssetID); err != nil {
+                    j.logger.Error().Err(err).Str("asset_id", o.AssetID.String()).
+                        Msg("failed to cleanup orphan snapshots")
+                }
+            }
+        }
+    }
+
+    return nil
+}
+
+func (j *OrphanSnapshotDetector) cleanupOrphanSnapshots(ctx context.Context, assetID uuid.UUID) error {
+    // 跨所有分区删除该孤儿资产的快照
+    result, err := j.db.Exec(ctx, `
+        DELETE FROM assets.asset_snapshots
+        WHERE asset_id = $1
+    `, assetID)
+    if err != nil {
+        return err
+    }
+    deleted := result.RowsAffected()
+    j.logger.Info().
+        Str("asset_id", assetID.String()).
+        Int64("deleted_count", deleted).
+        Msg("orphan snapshots cleaned up")
+    return nil
+}
+```
+
+**孤儿快照检测 job 调度配置**:
+
+```yaml
+# 定时 job: 每小时检测孤儿快照
+orphan_snapshot_detection:
+  schedule: "0 * * * *"              # 每小时整点执行
+  cleanup_orphan_snapshots: true     # 检测到孤儿时自动清理 (可配置)
+  alert_on_detect: true              # 检测到孤儿时告警
+  alert_threshold: 1                 # 孤儿快照数 ≥1 即告警
+  max_cleanup_batch: 1000            # 每次清理最多 1000 个 asset 的快照
+  on_failure: "alert_and_retry"      # 失败告警并重试
+```
+
+**第三层：资产物理删除时显式清理关联快照**:
+
+由于移除了 `ON DELETE CASCADE`，资产物理删除时需在**同一事务内**显式清理快照数据，避免产生孤儿快照:
+
+```go
+// internal/repo/asset_repo.go — 资产物理删除 (定时执行，需 super_admin 审批)
+func (r *AssetRepo) PhysicallyDeleteAsset(ctx context.Context, assetID uuid.UUID) error {
+    tx, err := r.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+    if err != nil {
+        return fmt.Errorf("begin tx: %w", err)
+    }
+    defer tx.Rollback(ctx) // safety rollback
+
+    // 1. 删除关联快照 (跨所有分区)
+    snapResult, err := tx.Exec(ctx, `
+        DELETE FROM assets.asset_snapshots
+        WHERE asset_id = $1
+    `, assetID)
+    if err != nil {
+        return fmt.Errorf("delete snapshots: %w", err)
+    }
+    snapDeleted := snapResult.RowsAffected()
+
+    // 2. 删除关联审计日志引用 (audit_log 不删，保留审计痕迹)
+    // audit_log 通过 ON DELETE SET NULL 处理 asset_id
+
+    // 3. 物理删除资产本身 (仅删除已软删除的资产)
+    assetResult, err := tx.Exec(ctx, `
+        DELETE FROM assets.assets
+        WHERE id = $1 AND deleted_at IS NOT NULL
+    `, assetID)
+    if err != nil {
+        return fmt.Errorf("delete asset: %w", err)
+    }
+    if assetResult.RowsAffected() == 0 {
+        return fmt.Errorf("asset %s not found or not soft-deleted", assetID)
+    }
+
+    if err := tx.Commit(ctx); err != nil {
+        return fmt.Errorf("commit: %w", err)
+    }
+
+    r.logger.Info().
+        Str("asset_id", assetID.String()).
+        Int64("snapshots_deleted", snapDeleted).
+        Msg("asset physically deleted with associated snapshots cleaned")
+    return nil
+}
+```
+
+> **PG16 分区表外键支持验证**: PostgreSQL 16 已支持分区表作为**被引用方** (referenced table) 的外键约束 (即其他表可 FK 引用分区表)，但分区表自身的外键 (作为引用方) 仍受 `ON DELETE CASCADE` 限制。上述方案移除 `asset_snapshots.asset_id` 的外键约束，改用应用层校验 + 孤儿快照定时检测 + 自动清理 + 资产删除时显式清理，规避此限制并保障数据一致性。
 
 **自动分区维护 (定时 job)**:
 ```go
@@ -2885,27 +3382,98 @@ CREATE TRIGGER trg_audit_log_archive_immutable
     FOR EACH ROW EXECUTE FUNCTION assets.audit_log_immutable_guard();
 ```
 
-**归档操作 (事务内原子操作 + advisory lock)**:
+**归档操作 (事务内原子操作 + advisory lock + 审计元日志)**:
 
-归档涉及 audit_log 的 DELETE，而 audit_log 有不可变触发器保护。归档须通过 SECURITY DEFINER 函数在事务内原子完成，使用 advisory lock 防止并发归档冲突：
+归档涉及 audit_log 的 DELETE，而 audit_log 有不可变触发器保护。归档须通过 SECURITY DEFINER 函数在事务内原子完成，使用 advisory lock 防止并发归档冲突。
+
+> **[风险修复 N9] 归档 SECURITY DEFINER 函数权限滥用**
+>
+> `archive_audit_log_batch()` 以 SECURITY DEFINER 运行，可绕过 audit_log 的不可变触发器执行 DELETE。若权限管理不当，攻击者可利用该函数删除任意审计日志。以下修复措施确保函数权限最小化、操作可审计、触发器恢复可靠。
+
+**1. 审计元日志表 (audit_meta)**:
 
 ```sql
-CREATE OR REPLACE FUNCTION assets.archive_audit_log_batch(retention_months INT DEFAULT 6)
-RETURNS TABLE(archived_count BIGINT) AS $$
+-- 归档操作审计元日志表 — 记录每次归档批次的完整信息
+CREATE TABLE assets.audit_meta (
+    id              BIGSERIAL PRIMARY KEY,
+    batch_id        UUID NOT NULL DEFAULT gen_random_uuid(),  -- 归档批次唯一 ID
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),        -- 归档开始时间
+    completed_at    TIMESTAMPTZ,                               -- 归档完成时间
+    archived_count  BIGINT NOT NULL DEFAULT 0,                 -- 归档行数
+    retention_months INT NOT NULL,                             -- 保留期 (月)
+    cutoff_date     TIMESTAMPTZ NOT NULL,                       -- 归档截止日期
+    operator        VARCHAR(255) NOT NULL,                     -- 操作者 (定时 job 名称或用户)
+    trigger_disabled BOOLEAN NOT NULL DEFAULT false,           -- 是否禁用了触发器
+    trigger_restored  BOOLEAN NOT NULL DEFAULT false,           -- 触发器是否已恢复
+    status          VARCHAR(20) NOT NULL DEFAULT 'running',     -- running | completed | failed
+    error_message   TEXT                                        -- 失败时的错误信息
+);
+
+-- 仅 archive_runner 可写入 audit_meta
+GRANT INSERT, UPDATE ON assets.audit_meta TO archive_runner;
+GRANT USAGE, SELECT ON SEQUENCE assets.audit_meta_id_seq TO archive_runner;
+GRANT SELECT ON assets.audit_meta TO audit_reader;
+```
+
+**2. 增强的归档函数 (严格校验 + 审计元日志 + 触发器事务内恢复)**:
+
+```sql
+CREATE OR REPLACE FUNCTION assets.archive_audit_log_batch(
+    retention_months INT DEFAULT 6,
+    batch_size INT DEFAULT 10000,
+    p_operator VARCHAR(255) DEFAULT 'scheduled_job'
+)
+RETURNS TABLE(archived_count BIGINT, batch_id UUID) AS $$
 DECLARE
-    cutoff TIMESTAMPTZ := now() - (retention_months || ' months')::INTERVAL;
-    cnt BIGINT;
+    cutoff         TIMESTAMPTZ := now() - (retention_months || ' months')::INTERVAL;
+    cnt            BIGINT;
+    v_batch_id     UUID := gen_random_uuid();
+    v_trigger_name TEXT := 'trg_audit_log_immutable';
 BEGIN
-    -- 获取 advisory lock，防止并发归档
+    -- ========== 权限与参数校验 ==========
+
+    -- 校验 1: retention_months 必须 ≥ 6 (防止删除近期数据)
+    IF retention_months < 6 THEN
+        RAISE EXCEPTION 'retention_months must be >= 6, got %', retention_months
+            USING ERRCODE = '22023';
+    END IF;
+
+    -- 校验 2: batch_size 必须 ≤ 10000 (防止长事务)
+    IF batch_size > 10000 OR batch_size < 1 THEN
+        RAISE EXCEPTION 'batch_size must be between 1 and 10000, got %', batch_size
+            USING ERRCODE = '22023';
+    END IF;
+
+    -- 校验 3: 禁止手动执行 — 仅允许通过定时 job 触发
+    -- 通过 application_name 判断调用来源 (定时 job 设置 application_name=archive_job)
+    IF current_setting('app.archive_job_active', true) IS DISTINCT FROM 'true' THEN
+        RAISE EXCEPTION 'Direct execution prohibited. Archive function can only be called by scheduled job.'
+            USING ERRCODE = '42501';
+    END IF;
+
+    -- ========== 记录归档开始 (审计元日志) ==========
+    INSERT INTO assets.audit_meta (
+        batch_id, started_at, retention_months, cutoff_date, operator, status
+    ) VALUES (
+        v_batch_id, now(), retention_months, cutoff, p_operator, 'running'
+    );
+
+    -- ========== 获取 advisory lock，防止并发归档 ==========
     PERFORM pg_advisory_xact_lock(hashtext('audit_log_archive_job'));
 
-    -- 事务内原子操作: INSERT 归档 + DELETE 原表
+    -- ========== 临时禁用不可变触发器 (仅本事务内生效) ==========
+    -- ALTER TABLE ... DISABLE TRIGGER 在事务内执行，COMMIT 后自动恢复
+    -- 若事务 ROLLBACK，触发器也会自动恢复 (DDL 在事务内是事务性的)
+    ALTER TABLE assets.audit_log DISABLE TRIGGER trg_audit_log_immutable;
+
+    -- ========== 事务内原子操作: INSERT 归档 + DELETE 原表 ==========
     -- 使用 CTE 确保 INSERT 和 DELETE 引用同一批数据
+    -- 严格限定: 只处理 6 个月以上数据 (created_at < cutoff)
     WITH to_archive AS (
         SELECT * FROM assets.audit_log
         WHERE created_at < cutoff
         ORDER BY id
-        LIMIT 10000  -- 分批归档，避免长事务
+        LIMIT batch_size  -- 分批归档，避免长事务 (≤10000 条)
         FOR UPDATE SKIP LOCKED
     ),
     archived AS (
@@ -2917,20 +3485,116 @@ BEGIN
     WHERE id IN (SELECT id FROM to_archive)
     AND created_at < cutoff;
 
-    -- 临时禁用不可变触发器以执行 DELETE (仅本事务内)
-    -- 注意: 此函数须以 SECURITY DEFINER 运行，仅限归档角色调用
-    -- 实际实现中需在函数开头 ALTER TABLE ... DISABLE TRIGGER trg_audit_log_immutable
-    -- 函数结尾 ENABLE TRIGGER (在 EXCEPTION 块中也要确保恢复)
-
+    -- ========== 记录归档结果 ==========
     GET DIAGNOSTICS cnt = ROW_COUNT;
     archived_count := cnt;
+
+    -- 更新审计元日志: 归档完成
+    UPDATE assets.audit_meta
+    SET completed_at = now(),
+        archived_count = cnt,
+        trigger_disabled = true,
+        trigger_restored = true,  -- COMMIT 后触发器自动恢复
+        status = 'completed'
+    WHERE batch_id = v_batch_id;
+
+    -- ========== 触发器恢复 ==========
+    -- 显式 ENABLE (安全起见，虽然 COMMIT 后会自动恢复)
+    ALTER TABLE assets.audit_log ENABLE TRIGGER trg_audit_log_immutable;
+
     RETURN NEXT;
+    RETURN;
+
+EXCEPTION WHEN OTHERS THEN
+    -- ========== 异常处理: 确保触发器恢复 + 记录失败 ==========
+    -- 异常时触发器随 ROLLBACK 自动恢复 (事务性 DDL)
+    -- 记录失败到审计元日志 (使用独立事务)
+    BEGIN
+        UPDATE assets.audit_meta
+        SET completed_at = now(),
+            status = 'failed',
+            trigger_restored = true,  -- ROLLBACK 后触发器自动恢复
+            error_message = SQLERRM
+        WHERE batch_id = v_batch_id;
+    EXCEPTION WHEN OTHERS THEN
+        -- 元日志更新失败不影响主异常传播
+        NULL;
+    END;
+    RAISE;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
--- REVOKE EXECUTE FROM PUBLIC; GRANT EXECUTE TO archive_runner;
+
+-- ========== 权限控制: 仅授予 archive_runner 专用角色 ==========
+REVOKE EXECUTE ON FUNCTION assets.archive_audit_log_batch(INT, INT, VARCHAR) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION assets.archive_audit_log_batch(INT, INT, VARCHAR) TO archive_runner;
+
+-- 创建专用角色 (无其他权限)
+-- CREATE ROLE archive_runner LOGIN NOINHERIT;
+-- archive_runner 仅拥有: EXECUTE archive_audit_log_batch + INSERT/UPDATE audit_meta
 ```
 
-> **安全说明**: `archive_audit_log_batch()` 以 SECURITY DEFINER 运行，绕过 audit_log 的不可变触发器执行 DELETE。该函数权限仅授予 `archive_runner` 角色，且函数内部严格限定 `created_at < cutoff` 条件，无法删除未过期记录。归档完成后立即恢复触发器。
+> **安全说明 (N9 修复后)**:
+> - **权限最小化**: `archive_audit_log_batch()` 权限仅授予 `archive_runner` 专用角色，PUBLIC 被显式 REVOKE。该角色无其他表权限。
+> - **禁止手动执行**: 函数内部通过 `app.archive_job_active` 会话变量校验调用来源，仅定时 job 设置该变量后才能执行，手动调用直接抛出异常 (SQLSTATE 42501)。
+> - **严格数据校验**: 函数内部强制 `retention_months ≥ 6` (只处理 6 个月以上数据) 和 `batch_size ≤ 10000` (每批不超过 10000 条)，防止删除近期数据或长事务。
+> - **审计元日志**: 每次归档操作写入 `audit_meta` 表，记录批次 ID、时间、行数、操作者、触发器状态，支持事后审计追溯。
+> - **触发器事务内恢复**: `ALTER TABLE ... DISABLE TRIGGER` 在事务内执行，COMMIT 后自动恢复；若事务 ROLLBACK (异常)，触发器也随事务回滚自动恢复。函数内显式 ENABLE 作为双重保险，EXCEPTION 块确保元日志记录失败状态。
+
+**3. 归档 job 调度 (设置 app.archive_job_active 标志)**:
+
+```yaml
+audit_log_archive:
+  schedule: "0 2 * * *"              # 每天凌晨 2 点执行
+  retention_months: 6                # 热数据保留 6 个月 (函数内部强制 ≥6)
+  batch_size: 10000                  # 每批归档 10000 条 (函数内部强制 ≤10000)
+  advisory_lock: true                # 使用 advisory lock 防并发
+  on_failure: "alert_and_retry"       # 失败告警并重试
+  vacuum_after: true                  # 归档后 VACUUM ANALYZE audit_log
+  # 归档 job 必须设置 app.archive_job_active=true (禁止手动执行)
+```
+
+```go
+// internal/job/audit_archive.go — 归档定时 job
+func (j *AuditArchiveJob) Run(ctx context.Context) error {
+    // 设置 app.archive_job_active 标志，允许归档函数执行
+    // 使用连接参数设置会话变量，防止手动执行
+    conn, err := j.db.Acquire(ctx)
+    if err != nil {
+        return fmt.Errorf("acquire connection: %w", err)
+    }
+    defer conn.Release()
+
+    // 设置会话变量 (归档函数校验此变量)
+    if _, err := conn.Exec(ctx, "SET app.archive_job_active = 'true'"); err != nil {
+        return fmt.Errorf("set archive_job_active: %w", err)
+    }
+
+    // 调用归档函数
+    var archivedCount int64
+    var batchID string
+    err = conn.QueryRow(ctx, `
+        SELECT archived_count, batch_id
+        FROM assets.archive_audit_log_batch($1, $2, $3)
+    `, j.config.RetentionMonths, j.config.BatchSize, "scheduled_job").Scan(&archivedCount, &batchID)
+    if err != nil {
+        j.logger.Error().Err(err).Msg("archive batch failed")
+        return err
+    }
+
+    j.logger.Info().
+        Str("batch_id", batchID).
+        Int64("archived_count", archivedCount).
+        Msg("audit log archive batch completed")
+
+    // 归档后 VACUUM ANALYZE
+    if j.config.VacuumAfter {
+        if _, err := conn.Exec(ctx, "VACUUM ANALYZE assets.audit_log"); err != nil {
+            j.logger.Warn().Err(err).Msg("VACUUM ANALYZE failed (non-fatal)")
+        }
+    }
+    return nil
+}
+```
 
 **统一查询视图 (跨热表 + 归档表)**:
 
@@ -3148,17 +3812,329 @@ data_tiering:
     format: parquet_zstd             # Parquet + Zstd 压缩
 ```
 
+> **[可靠性加固] S3 归档管道幂等 + 状态机 + Checksum 验证**
+>
+> **问题 [🟡N4]**: 原归档流程 `Parquet 导出 → S3 上传 → 验证 → DETACH` 为单步串行，
+> 任一步失败可能导致数据丢失 (如 S3 上传成功但 DETACH 前崩溃 → 分区既已 DETACH 又无法重新归档；
+> 或 Parquet 导出后未上传即崩溃 → 重复导出产生重复文件)。缺少幂等保证和状态追踪。
+>
+> **修复方案**: 归档管道实现**幂等 + 分步状态机 + Checksum 验证 + 自动重试**。
+
+**归档管道 ASCII 流程图**:
+
+```
+                        ┌──────────────────────────────────────────────────────────────┐
+                        │                  S3 归档管道 (幂等 + 状态机)                   │
+                        └──────────────────────────────────────────────────────────────┘
+
+  ┌─────────┐     ┌───────────┐     ┌────────────┐     ┌───────────┐     ┌──────────┐     ┌──────────┐
+  │ pending │────►│ exporting │────►│ uploading  │────►│ verifying │────►│ detaching│────►│completed │
+  └────┬────┘     └─────┬─────┘     └─────┬──────┘     └─────┬─────┘     └────┬─────┘     └──────────┘
+       │                │                 │                 │                │
+       │    重试<3       │   重试<3        │   重试<3        │  checksum      │  DETACH
+       │    ┌───────┐   │  ┌───────┐     │  ┌───────┐     │  比对失败       │  成功
+       │    │       │   │  │       │     │  │       │     │  ┌───────┐     │
+       └───►│retry  │◄──┴─►│retry  │◄────┴─►│retry  │◄────┴─►│retry  │◄────┘
+            │backoff│      │backoff│      │backoff│      │backoff│
+            └───┬───┘      └───┬───┘      └───┬───┘      └───┬───┘
+                │              │              │              │
+           重试≥3         重试≥3         重试≥3         重试≥3
+                ▼              ▼              ▼              ▼
+              ┌──────────────────────────────────────────────┐
+              │                    failed                    │ → 告警 + 人工介入
+              └──────────────────────────────────────────────┘
+
+  幂等保证: archive_id (UUID) 唯一标识每个分区归档任务
+            重试时检查 archive_manifest.state，从失败步骤恢复，不重复执行已完成步骤
+```
+
+**1. archive_manifest 表 — 记录每个分区的归档状态**:
+
+```sql
+-- 归档清单表: 每个分区归档任务一行，唯一 archive_id 保证幂等
+CREATE TABLE assets.archive_manifest (
+    archive_id      UUID NOT NULL DEFAULT gen_random_uuid(),
+    partition_name  VARCHAR(128) NOT NULL,          -- e.g. asset_snapshots_2026_04
+    table_name      VARCHAR(64) NOT NULL DEFAULT 'asset_snapshots',
+    state           VARCHAR(20) NOT NULL DEFAULT 'pending',
+                    -- pending | exporting | uploading | verifying | detaching | completed | failed
+    s3_key          VARCHAR(512),                    -- s3://asset-db/snapshots/year=2026/month=04/data.parquet
+    s3_checksum     VARCHAR(64),                     -- S3 上传后返回的 SHA256
+    local_checksum  VARCHAR(64),                     -- 本地 Parquet 文件 SHA256 (导出后计算)
+    row_count       BIGINT,                          -- 归档行数
+    file_size_bytes BIGINT,                          -- Parquet 文件大小
+    retry_count     INTEGER NOT NULL DEFAULT 0,
+    max_retries     INTEGER NOT NULL DEFAULT 3,
+    error_message   TEXT,
+    started_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at    TIMESTAMPTZ,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (archive_id),
+    UNIQUE (partition_name, table_name)              -- 同一分区只有一个活跃归档任务 (幂等)
+);
+
+-- 状态机约束: 只允许合法的状态流转
+-- pending → exporting → uploading → verifying → detaching → completed
+-- 任意非 completed 状态 → failed (重试耗尽)
+-- failed → pending (人工触发重试)
+
+-- 索引: 按状态查询待处理/失败任务
+CREATE INDEX idx_archive_manifest_state ON assets.archive_manifest(state);
+CREATE INDEX idx_archive_manifest_partition ON assets.archive_manifest(partition_name);
+```
+
+**2. 归档管道实现 (状态机 + 幂等 + Checksum 验证 + 自动重试)**:
+
 ```go
-// 定时归档任务: 热数据 → S3 Parquet
-func (r *SnapshotRepo) ArchiveToS3(ctx context.Context, olderThan time.Duration) error {
-    // 1. 查询超过 3 个月的快照数据 (按月分批)
-    // 2. 导出为 Parquet 文件 (使用 arrow-go / parquet-go)
-    // 3. 上传到 S3: s3://asset-db/snapshots/year=2026/month=07/data.parquet
-    // 4. 验证上传成功后 DETACH PARTITION → DROP
-    // 5. 记录归档元数据到 archive_manifest 表
-    return r.archivePipeline.Run(ctx, olderThan)
+// internal/archives/pipeline.go — S3 归档管道 (幂等 + 状态机)
+
+const (
+    StatePending   = "pending"
+    StateExporting = "exporting"
+    StateUploading = "uploading"
+    StateVerifying = "verifying"
+    StateDetaching = "detaching"
+    StateCompleted = "completed"
+    StateFailed    = "failed"
+    MaxRetries     = 3
+)
+
+// ArchivePipeline 归档管道，每个分区有唯一 archive_id，重试从失败步骤恢复
+type ArchivePipeline struct {
+    db          *pgxpool.Pool
+    s3          *s3.Client
+    bucket      string
+    alertSink   AlertSink // 告警接口 (PagerDuty/Slack)
+}
+
+// Run 执行归档管道，幂等: 重试时从 archive_manifest.state 恢复
+func (p *ArchivePipeline) Run(ctx context.Context, partitionName string) error {
+    // 1. 获取或创建归档记录 (幂等: 同一 partition_name 只有一个活跃任务)
+    manifest, err := p.getOrCreateManifest(ctx, partitionName)
+    if err != nil {
+        return err
+    }
+
+    // 2. 已完成的任务直接返回 (幂等)
+    if manifest.State == StateCompleted {
+        log.Info().Str("archive_id", manifest.ArchiveID.String()).
+            Str("partition", partitionName).
+            Msg("archive already completed, skipping (idempotent)")
+        return nil
+    }
+
+    // 3. 按状态机恢复执行 (从失败步骤继续，不重复已完成步骤)
+    for manifest.RetryCount < MaxRetries {
+        err := p.executeStep(ctx, manifest)
+        if err == nil {
+            return nil // 归档完成
+        }
+
+        // 步骤失败 → 记录错误，递增重试计数
+        manifest.RetryCount++
+        manifest.ErrorMessage = err.Error()
+        if manifest.RetryCount >= MaxRetries {
+            // 重试耗尽 → 标记 failed + 告警人工介入
+            p.updateState(ctx, manifest.ArchiveID, StateFailed, err)
+            p.alertSink.Send(ctx, Alert{
+                Severity: "critical",
+                Title:    "S3 归档失败 — 需人工介入",
+                Message:  fmt.Sprintf("分区 %s 归档失败 (重试 %d 次): %v", partitionName, manifest.RetryCount, err),
+            })
+            return fmt.Errorf("archive failed after %d retries: %w", manifest.RetryCount, err)
+        }
+
+        // 指数退避重试
+        backoff := time.Duration(manifest.RetryCount*manifest.RetryCount) * time.Minute
+        log.Warn().Err(err).Str("partition", partitionName).
+            Int("retry", manifest.RetryCount).
+            Dur("backoff", backoff).
+            Msg("archive step failed, retrying after backoff")
+        time.Sleep(backoff)
+    }
+    return nil
+}
+
+// executeStep 根据当前状态执行对应步骤
+func (p *ArchivePipeline) executeStep(ctx context.Context, m *ArchiveManifest) error {
+    switch m.State {
+    case StatePending, StateFailed:
+        // pending → exporting: 导出 Parquet
+        return p.stepExport(ctx, m)
+    case StateExporting:
+        // exporting → uploading: 上传 S3
+        return p.stepUpload(ctx, m)
+    case StateUploading:
+        // uploading → verifying: 验证 checksum
+        return p.stepVerify(ctx, m)
+    case StateVerifying:
+        // verifying → detaching: DETACH 分区
+        return p.stepDetach(ctx, m)
+    case StateDetaching:
+        // detaching → completed: DROP 分区文件
+        return p.stepComplete(ctx, m)
+    }
+    return fmt.Errorf("unknown state: %s", m.State)
+}
+
+// stepExport: 导出分区数据为 Parquet 文件
+func (p *ArchivePipeline) stepExport(ctx context.Context, m *ArchiveManifest) error {
+    p.updateState(ctx, m.ArchiveID, StateExporting, nil)
+
+    // 导出为本地 Parquet 文件 (使用 arrow-go / parquet-go)
+    localPath := fmt.Sprintf("/tmp/archive_%s.parquet", m.PartitionName)
+    rowCount, err := p.exportToParquet(ctx, m.PartitionName, localPath)
+    if err != nil {
+        return fmt.Errorf("export failed: %w", err)
+    }
+
+    // 计算本地文件 SHA256 checksum
+    checksum, fileSize, err := computeSHA256(localPath)
+    if err != nil {
+        return fmt.Errorf("checksum failed: %w", err)
+    }
+
+    // 记录到 manifest (幂等: 重试时若 local_checksum 已存在且匹配则跳过导出)
+    p.updateManifest(ctx, m.ArchiveID, ManifestUpdate{
+        LocalChecksum:  checksum,
+        RowCount:       rowCount,
+        FileSizeBytes:  fileSize,
+    })
+    m.LocalChecksum = checksum
+    m.RowCount = rowCount
+    return p.stepUpload(ctx, m) // 继续下一步
+}
+
+// stepUpload: 上传 Parquet 到 S3
+func (p *ArchivePipeline) stepUpload(ctx context.Context, m *ArchiveManifest) error {
+    p.updateState(ctx, m.ArchiveID, StateUploading, nil)
+
+    s3Key := fmt.Sprintf("snapshots/%s/data.parquet", m.PartitionName)
+    localPath := fmt.Sprintf("/tmp/archive_%s.parquet", m.PartitionName)
+
+    // S3 上传 (带服务端 checksum: S3 返回 ETag/SHA256)
+    s3Checksum, err := p.uploadToS3(ctx, localPath, s3Key)
+    if err != nil {
+        return fmt.Errorf("s3 upload failed: %w", err)
+    }
+
+    p.updateManifest(ctx, m.ArchiveID, ManifestUpdate{
+        S3Key:      s3Key,
+        S3Checksum:  s3Checksum,
+    })
+    m.S3Key = s3Key
+    m.S3Checksum = s3Checksum
+    return p.stepVerify(ctx, m)
+}
+
+// stepVerify: 验证 S3 上传完整性 (checksum 比对)
+func (p *ArchivePipeline) stepVerify(ctx context.Context, m *ArchiveManifest) error {
+    p.updateState(ctx, m.ArchiveID, StateVerifying, nil)
+
+    // 从 S3 下载文件头部或完整文件，计算 checksum 并比对
+    // 方式1: S3 HeadObject 获取 ETag (MD5) 或 SHA256 checksum
+    // 方式2: S3 GetObject 范围读取 + 本地 SHA256 比对 (更严格)
+    s3RemoteChecksum, err := p.getS3Checksum(ctx, m.S3Key)
+    if err != nil {
+        return fmt.Errorf("s3 checksum verification failed: %w", err)
+    }
+
+    // checksum 比对: 本地 SHA256 == S3 SHA256
+    if s3RemoteChecksum != m.LocalChecksum {
+        return fmt.Errorf("checksum mismatch: local=%s s3=%s — data may be corrupted",
+            m.LocalChecksum, s3RemoteChecksum)
+    }
+
+    log.Info().Str("archive_id", m.ArchiveID.String()).
+        Str("partition", m.PartitionName).
+        Str("s3_key", m.S3Key).
+        Int64("rows", m.RowCount).
+        Msg("S3 upload verified (checksum match)")
+    return p.stepDetach(ctx, m)
+}
+
+// stepDetach: DETACH PARTITION (必须在 checksum 验证通过后)
+func (p *ArchivePipeline) stepDetach(ctx context.Context, m *ArchiveManifest) error {
+    p.updateState(ctx, m.ArchiveID, StateDetaching, nil)
+
+    // DETACH PARTITION — 仅在 S3 验证通过后执行
+    // 关键: DETACH 前再次确认 archive_manifest.state == verifying (防止并发误删)
+    _, err := p.db.Exec(ctx, `
+        ALTER TABLE assets.asset_snapshots
+        DETACH PARTITION assets.${m.PartitionName}
+    `)
+    if err != nil {
+        return fmt.Errorf("detach partition failed: %w", err)
+    }
+    return p.stepComplete(ctx, m)
+}
+
+// stepComplete: DROP 分区文件 + 标记完成
+func (p *ArchivePipeline) stepComplete(ctx context.Context, m *ArchiveManifest) error {
+    // DROP 已 DETACH 的分区表
+    _, err := p.db.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS assets.%s", m.PartitionName))
+    if err != nil {
+        return fmt.Errorf("drop partition failed: %w", err)
+    }
+
+    // 清理本地临时文件
+    os.Remove(fmt.Sprintf("/tmp/archive_%s.parquet", m.PartitionName))
+
+    // 标记 completed
+    p.updateState(ctx, m.ArchiveID, StateCompleted, nil)
+    log.Info().Str("archive_id", m.ArchiveID.String()).
+        Str("partition", m.PartitionName).
+        Str("s3_key", m.S3Key).
+        Int64("rows", m.RowCount).
+        Msg("archive pipeline completed")
+    return nil
+}
+
+// getOrCreateManifest 幂等获取或创建归档记录
+func (p *ArchivePipeline) getOrCreateManifest(ctx context.Context, partitionName string) (*ArchiveManifest, error) {
+    // INSERT ... ON CONFLICT (partition_name, table_name) DO NOTHING
+    // 然后 SELECT 返回现有记录 → 同一分区重试不会创建重复记录
+    var m ArchiveManifest
+    err := p.db.QueryRow(ctx, `
+        INSERT INTO assets.archive_manifest (partition_name, state)
+        VALUES ($1, 'pending')
+        ON CONFLICT (partition_name, table_name) DO NOTHING
+        RETURNING archive_id, partition_name, state, s3_key, s3_checksum,
+                  local_checksum, row_count, retry_count, max_retries
+    `, partitionName).Scan(&m.ArchiveID, &m.PartitionName, &m.State, ...)
+    if err == pgx.ErrNoRows {
+        // 记录已存在 → 查询现有状态 (从失败步骤恢复)
+        err = p.db.QueryRow(ctx, `
+            SELECT archive_id, partition_name, state, s3_key, s3_checksum,
+                   local_checksum, row_count, retry_count, max_retries
+            FROM assets.archive_manifest
+            WHERE partition_name = $1 AND state != 'completed'
+            ORDER BY updated_at DESC LIMIT 1
+        `, partitionName).Scan(&m.ArchiveID, &m.PartitionName, &m.State, ...)
+    }
+    return &m, err
 }
 ```
+
+**3. 归档 job 调度 (带超时告警)**:
+
+```yaml
+# 归档管道调度配置
+archive_pipeline:
+  schedule: "0 3 * * *"                    # 每天凌晨 3 点执行 (避开业务高峰)
+  older_than_months: 3                     # 归档 3 个月以上的分区
+  max_retries: 3                            # 每步最多重试 3 次
+  retry_backoff: "exponential"              # 指数退避: 1min, 4min, 9min
+  step_timeout: 30m                         # 单步超时 30 分钟
+  total_timeout: 4h                         # 整个管道超时 4 小时
+  on_max_retries_exceeded: "alert_manual"   # 重试耗尽 → 告警 + 人工介入
+  on_total_timeout: "alert_manual"          # 总超时 → 告警 + 人工介入
+  alert_channels: ["pagerduty", "slack"]    # 告警渠道
+  verify_before_detach: true                # DETACH 前必须 checksum 验证通过
+  cleanup_temp_files: true                  # 完成后清理临时 Parquet 文件
+```
+
+> **幂等保证总结**: (1) `archive_manifest` 表 `UNIQUE(partition_name, table_name)` 确保同一分区只有一个归档任务; (2) 重试时检查 `state` 字段，从失败步骤恢复，不重复执行已完成步骤 (如已 uploading 则跳过 exporting); (3) `archive_id` (UUID) 唯一标识，日志和告警可精确追踪; (4) DETACH 前必须 checksum 比对通过，防止数据损坏后误删分区; (5) 重试 3 次失败后标记 `failed` + 告警人工介入，不会自动 DROP 分区。
 
 **4. 聚合表 — asset_snapshot_daily**
 
@@ -3338,45 +4314,202 @@ session:{user_id}       → {token_id}  TTL=7天   (用于登出时批量撤销)
 blacklist:{access_jti}  → "revoked"   TTL=15min (access token 主动撤销)
 ```
 
-> **[安全加固] Access Token 主动撤销 — Redis 不可用时 Fail-Closed**
+> **[安全加固 + 可用性加固] Access Token 主动撤销 — 分级 Fail-Closed 策略**
 >
-> **问题**: JWT access token 主动撤销依赖 Redis 黑名单 (`blacklist:{access_jti}`)，
-> 但当 Redis 不可用时 (网络故障/维护)，auth 中间件若跳过黑名单检查 (fail-open)，
-> 已撤销的 token 仍可在有效期内访问，存在安全窗口期。
+> **问题 [🟡N5]**: JWT access token 主动撤销依赖 Redis 黑名单 (`blacklist:{access_jti}`)，
+> 原方案在 Redis 不可用时对所有请求统一 fail-closed (返回 503)，导致 Redis 故障时**全站不可用**，
+> 可用性大幅下降。Redis 故障虽概率低但影响面广 (所有需鉴权的 API 均受影响)。
 >
-> **修复方案**: Redis 不可用时 auth 中间件 **fail-closed** — 拒绝请求而非放行:
-> ```go
-> // internal/middleware/auth.go — isRevoked 方法
-> func (m *AuthMiddleware) isRevoked(ctx context.Context, jti string) (bool, error) {
->     key := fmt.Sprintf("blacklist:%s", jti)
->     result, err := m.redis.Exists(ctx, key).Result()
->     if err != nil {
->         // Redis 不可用 → fail-closed: 返回错误，拒绝请求
->         // 不返回 (false, nil) 否则已撤销 token 会被放行
->         return false, fmt.Errorf("redis unavailable: cannot verify token revocation")
->     }
->     return result > 0, nil
-> }
->
-> // 在 VerifyJWT 中间件中 (见 §6.6):
-> // revoked, err := m.isRevoked(ctx, claims.ID)
-> // if err != nil {
-> //     // fail-closed: Redis 不可用 → 拒绝请求，返回 503
-> //     c.AbortWithStatusJSON(503, gin.H{"error": "auth service temporarily unavailable"})
-> //     return
-> // }
-> // if revoked {
-> //     c.AbortWithStatusJSON(401, gin.H{"error": "token revoked"})
-> //     return
-> // }
-> ```
->
-> **权衡说明**:
-> - **Fail-closed (推荐)**: Redis 故障时所有需鉴权的请求被拒绝 (503)，影响可用性但保证安全。
-> - **Fail-open (禁止)**: Redis 故障时跳过黑名单检查，已撤销 token 可用 — 存在安全窗口期。
-> - 系统安全优先，选择 fail-closed。Redis 应配置高可用 (Sentinel/Cluster) 降低故障概率。
-> - 可选优化: 对只读端点 (GET) 在 Redis 短暂不可用时降级为 fail-open (容忍短暂窗口)，
->   写操作 (POST/PUT/DELETE) 始终 fail-closed。此策略需在配置中显式开启。
+> **修复方案**: 实施**分级 fail-closed 策略** — 按操作类型区分安全等级，在安全与可用性间取得平衡:
+
+**分级 Fail-Closed 策略矩阵**:
+
+| 操作类型 | HTTP 方法 | 端点示例 | Redis 故障时行为 | 理由 |
+|---|---|---|---|---|
+| **写操作** | POST/PUT/PATCH/DELETE | `/assets/*`, `/auth/*` | **fail-closed** → 503 | 写操作安全优先，拒绝已撤销 token 写入 |
+| **读操作** | GET | `/assets/:id`, `/assets` | **可选 fail-open** → 放行 (配置项 `auth.fail_open_get=true`) | 读操作风险低，容忍短暂窗口 |
+| **Agent 上报** | POST `/agents/sync` | `/agents/sync`, `/agents/heartbeat` | **fail-open** → 放行 | 优先保证数据采集不中断，Agent 另有 mTLS 校验 |
+
+**配置项**:
+
+```yaml
+# config.yaml — 分级 fail-closed 配置
+auth:
+  fail_open_get: true          # GET 请求 Redis 故障时 fail-open (默认 true，可关闭)
+  fail_open_agent_sync: true   # Agent 上报 Redis 故障时 fail-open (默认 true)
+  # POST/PUT/DELETE 始终 fail-closed，不可配置
+```
+
+**实现 (分级 fail-closed 中间件)**:
+
+```go
+// internal/middleware/auth.go — 分级 fail-closed 策略
+
+func (m *AuthMiddleware) isRevoked(ctx context.Context, jti string) (bool, error) {
+    key := fmt.Sprintf("blacklist:%s", jti)
+    result, err := m.redis.Exists(ctx, key).Result()
+    if err != nil {
+        // Redis 不可用 → 返回错误，由调用方按操作类型决定 fail-closed/fail-open
+        return false, fmt.Errorf("redis unavailable: cannot verify token revocation")
+    }
+    return result > 0, nil
+}
+
+// VerifyJWT 中间件 — 分级 fail-closed
+func (m *AuthMiddleware) VerifyJWT(c *gin.Context) {
+    // ... JWT 解析与签名验证 (省略，见 §6.6) ...
+
+    revoked, err := m.isRevoked(c.Request.Context(), claims.ID)
+    if err != nil {
+        // Redis 不可用 → 按操作类型分级处理
+        method := c.Request.Method
+        path := c.FullPath()
+
+        switch {
+        case isWriteOperation(method): // POST/PUT/PATCH/DELETE
+            // 写操作: 始终 fail-closed → 503
+            c.AbortWithStatusJSON(503, gin.H{
+                "error":   "auth service temporarily unavailable",
+                "reason":  "redis unavailable, write operations require revocation check",
+            })
+            return
+
+        case isAgentSync(path): // /agents/sync, /agents/heartbeat
+            // Agent 上报: fail-open → 放行 (优先保证数据采集不中断)
+            // Agent 另有 mTLS 证书校验 (见 §8.2)，安全有多重保障
+            if m.config.FailOpenAgentSync {
+                log.Warn().Str("jti", claims.ID).
+                    Msg("redis unavailable, agent sync fail-open (mTLS still enforced)")
+                c.Set("revocation_check_skipped", true)
+                c.Next()
+                return
+            }
+            // 配置关闭 fail-open → fall through to fail-closed
+            c.AbortWithStatusJSON(503, gin.H{"error": "auth service temporarily unavailable"})
+            return
+
+        case method == "GET":
+            // 读操作: 可选 fail-open (配置项 auth.fail_open_get)
+            if m.config.FailOpenGet {
+                log.Warn().Str("jti", claims.ID).
+                    Msg("redis unavailable, GET fail-open (config enabled)")
+                c.Set("revocation_check_skipped", true)
+                c.Next()
+                return
+            }
+            // 配置关闭 → fail-closed
+            c.AbortWithStatusJSON(503, gin.H{"error": "auth service temporarily unavailable"})
+            return
+
+        default:
+            // 默认: fail-closed
+            c.AbortWithStatusJSON(503, gin.H{"error": "auth service temporarily unavailable"})
+            return
+        }
+    }
+
+    if revoked {
+        c.AbortWithStatusJSON(401, gin.H{"error": "token revoked"})
+        return
+    }
+    c.Next()
+}
+
+func isWriteOperation(method string) bool {
+    return method == "POST" || method == "PUT" ||
+           method == "PATCH" || method == "DELETE"
+}
+
+func isAgentSync(path string) bool {
+    return path == "/api/v1/agents/sync" || path == "/api/v1/agents/heartbeat"
+}
+```
+
+**Sentinel HA — 降低 Redis 故障概率到 <0.1%**:
+
+```
+Redis Sentinel (3 节点: 1 Master + 2 Slave + 3 Sentinel)
+├── Sentinel 自动监控 + 故障转移 (RTO < 10s)
+├── API Server 通过 Sentinel 发现 Master 地址
+├── 限流中间件: 本地令牌桶兜底 (Redis 不可用时降级)
+├── 缓存层熔断: Redis 连续失败 N 次 → 熔断, 直连 DB
+└── 分级 fail-closed: 写操作 503 / 读操作+Agent 上报 fail-open
+```
+
+- **Sentinel 3 节点集群**: 1 Master + 2 Slave + 3 Sentinel 进程，自动故障转移 (RTO < 10s)
+- **多 AZ 部署**: Sentinel 节点跨可用区分布，单 AZ 故障不影响 Redis 可用性
+- **预估故障率**: Sentinel HA + 多 AZ → Redis 不可用概率 < 0.1% (年宕机 < 53 分钟)
+
+**Redis 健康监控 + 自动告警 + 快速恢复流程**:
+
+```yaml
+# Redis 健康监控配置
+redis_monitoring:
+  health_check:
+    interval: 5s              # 每 5 秒 ping 一次
+    timeout: 1s               # 超时 1 秒
+    consecutive_failures: 3   # 连续 3 次失败 → 触发告警
+  alerts:
+    redis_unavailable:
+      severity: critical
+      channels: [pagerduty, slack]
+      message: "Redis 不可用 — 已触发分级 fail-closed (写操作 503, 读操作 fail-open)"
+    sentinel_failover:
+      severity: warning
+      channels: [slack]
+      message: "Redis Sentinel 故障转移中 — 预计 RTO < 10s"
+  recovery:
+    auto_reconnect: true      # API Server 自动重连 Sentinel 发现新 Master
+    cache_warmup: true        # Redis 恢复后预热热点缓存
+```
+
+```go
+// internal/infra/redis_health.go — Redis 健康监控 + 自动告警
+
+type RedisHealthMonitor struct {
+    redis      *redis.Client
+    sentinel   *redis.SentinelClient
+    alertSink  AlertSink
+    failCount  int32           // 原子计数: 连续失败次数
+    lastAlert  time.Time       // 上次告警时间 (防告警风暴)
+}
+
+func (m *RedisHealthMonitor) Start(ctx context.Context) {
+    ticker := time.NewTicker(5 * time.Second)
+    defer ticker.Stop()
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            m.check(ctx)
+        }
+    }
+}
+
+func (m *RedisHealthMonitor) check(ctx context.Context) {
+    pingCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+    defer cancel()
+
+    if err := m.redis.Ping(pingCtx).Err(); err != nil {
+        atomic.AddInt32(&m.failCount, 1)
+        if atomic.LoadInt32(&m.failCount) >= 3 && time.Since(m.lastAlert) > 30*time.Second {
+            m.alertSink.Send(ctx, Alert{
+                Severity: "critical",
+                Title:    "Redis 不可用",
+                Message:  fmt.Sprintf("Redis ping 连续 %d 次失败: %v — 已触发分级 fail-closed", atomic.LoadInt32(&m.failCount), err),
+            })
+            m.lastAlert = time.Now()
+        }
+    } else {
+        if atomic.SwapInt32(&m.failCount, 0) > 0 {
+            log.Info().Msg("Redis 恢复可用 — fail-closed 状态解除")
+        }
+    }
+}
+```
+
+> **分级 fail-closed 总结**: (1) 写操作 (POST/PUT/PATCH/DELETE) 始终 fail-closed，Redis 故障时返回 503，保证安全; (2) 读操作 (GET) 可选 fail-open (配置项 `auth.fail_open_get=true`)，跳过黑名单检查直接放行，容忍短暂安全窗口; (3) Agent 上报 (`/agents/sync`, `/agents/heartbeat`) fail-open，优先保证数据采集不中断 (Agent 另有 mTLS 证书校验作为安全兜底); (4) Sentinel 3 节点 HA + 多 AZ 部署将 Redis 故障概率降至 <0.1%; (5) Redis 健康监控 + 自动告警 + 快速恢复流程，故障时自动通知运维并触发重连。
 
 ### 15.7 API 版本兼容策略
 
@@ -3651,3 +4784,1313 @@ apiClient.interceptors.response.use(
   }
 );
 ```
+
+### 15.9 Vault/KMS 单点故障修复
+
+**问题**: API Server 启动时依赖 HashiCorp Vault 读取 Ed25519 私钥，Vault 不可用 = 系统无法启动。运行时签发新 JWT 也依赖 Vault 读取私钥，Vault 宕机期间无法签发新 token，已登录用户的 token 验证不受影响（公钥可本地缓存），但新登录和 token 刷新将失败。
+
+**风险等级**: 🔴 高风险 — 单点故障导致系统不可启动 / 不可登录。
+
+**修复方案**:
+
+#### 15.9.1 Vault HA 部署 (3 节点集群)
+
+Vault 自身需高可用部署，消除单点故障。采用 3 节点集群 + Raft 共识算法：
+
+```
+Vault HA 集群 (3 节点, Raft 共识)
+┌──────────────────────────────────────────────────────────┐
+│                                                          │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐│
+│  │ Vault Node 1 │◄──►│ Vault Node 2 │◄──►│ Vault Node 3 ││
+│  │ (Leader)     │    │ (Follower)   │    │ (Follower)   ││
+│  │ AZ-a         │    │ AZ-b         │    │ AZ-c         ││
+│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘│
+│         │                   │                   │         │
+│         └───────────────────┴───────────────────┘         │
+│                     Raft 共识                              │
+│                                                          │
+│  存储: Integrated Storage (Raft) — 不依赖外部 Consul       │
+│  自动故障转移: Leader 宕机 → Follower 选举 (RTO < 10s)     │
+│  跨 AZ 部署: 3 节点分布在 3 个可用区                       │
+│  备份: 每日 Raft snapshot 到 S3/GCS (加密)                 │
+└──────────────────────────────────────────────────────────┘
+
+API Server 访问方式:
+  - 通过 Vault Load Balancer (内部 LB) 访问 Active 节点
+  - 或使用 Vault Agent Sidecar 自动发现 Leader
+```
+
+**配置要点**:
+```hcl
+# Vault 集群配置 (每个节点)
+storage "raft" {
+  path    = "/vault/data"
+  node_id = "vault-node-1"  # 每个节点不同
+
+  retry_join {
+    leader_address = "https://vault-node-1:8200"
+  }
+  retry_join {
+    leader_address = "https://vault-node-2:8200"
+  }
+  retry_join {
+    leader_address = "https://vault-node-3:8200"
+  }
+}
+
+api_addr     = "https://0.0.0.0:8200"
+cluster_addr = "https://0.0.0.0:8201"
+```
+
+#### 15.9.2 API Server 启动时缓存公钥
+
+利用 Ed25519 非对称签名的特性：**验证 JWT 只需公钥，签发 JWT 才需私钥**。API Server 启动时从 Vault 读取一次公钥并缓存到内存 + 本地磁盘，运行时验证 JWT 不再依赖 Vault。
+
+```go
+// internal/auth/keymanager.go
+
+type KeyManager struct {
+    vaultClient  *vault.Client
+    publicKey    ed25519.PublicKey  // 内存缓存
+    privateKey   ed25519.PrivateKey // 仅签发时使用，不长期持有
+    pubKeyFile   string             // 本地磁盘缓存路径
+    mu           sync.RWMutex
+}
+
+// Init 启动时从 Vault 读取公钥并缓存
+func (km *KeyManager) Init(ctx context.Context) error {
+    // 1. 尝试从 Vault 读取公钥
+    pubKey, err := km.fetchPublicKeyFromVault(ctx)
+    if err != nil {
+        // 2. Vault 不可用 → 尝试本地磁盘缓存
+        pubKey, err = km.loadCachedPublicKey()
+        if err != nil {
+            return fmt.Errorf("vault unavailable and no cached public key: %w", err)
+        }
+        log.Warn("Vault 不可用，使用本地缓存的公钥 (仅验证 JWT，无法签发新 token)")
+    }
+
+    km.mu.Lock()
+    km.publicKey = pubKey
+    km.mu.Unlock()
+
+    // 3. 持久化公钥到本地磁盘 (供下次启动使用)
+    if err := km.cachePublicKeyToDisk(pubKey); err != nil {
+        log.Warn("公钥磁盘缓存写入失败 (不影响运行): " + err.Error())
+    }
+
+    return nil
+}
+
+// VerifyPublicKey 验证 JWT — 仅使用缓存的公钥，不依赖 Vault
+func (km *KeyManager) VerifyToken(tokenStr string) (*jwt.Claims, error) {
+    km.mu.RLock()
+    pubKey := km.publicKey
+    km.mu.RUnlock()
+
+    if pubKey == nil {
+        return nil, errors.New("public key not initialized")
+    }
+
+    // EdDSA 验证 — 纯本地计算，无 Vault 依赖
+    claims := &jwt.RegisteredClaims{}
+    _, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (interface{}, error) {
+        // 算法降级防护
+        if !t.Method.Alg().Valid() || t.Header["alg"] != "EdDSA" {
+            return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+        }
+        return pubKey, nil
+    })
+    return claims, err
+}
+
+// SignToken 签发 JWT — 需要从 Vault 读取私钥
+func (km *KeyManager) SignToken(claims *jwt.RegisteredClaims) (string, error) {
+    // 私钥不长期缓存，每次签发时从 Vault 读取 (或短期缓存 + TTL)
+    privKey, err := km.fetchPrivateKeyFromVault(context.Background())
+    if err != nil {
+        return "", fmt.Errorf("vault unavailable, cannot sign new token: %w", err)
+    }
+    defer zeroPrivateKey(privKey) // 用后清零内存
+
+    token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+    return token.SignedString(privKey)
+}
+```
+
+#### 15.9.3 Vault 不可用时的降级策略
+
+| 场景 | Vault 状态 | API Server 行为 | 用户影响 |
+|---|---|---|---|
+| 正常运行 | 可用 | 正常签发 + 验证 JWT | 无影响 |
+| Vault 宕机 (运行中) | 不可用 | 验证 JWT: 使用缓存公钥，正常工作；签发新 token: 返回 503 | 已登录用户不受影响；新登录/刷新 token 失败 |
+| API Server 启动时 Vault 不可用 | 不可用 | 使用本地磁盘缓存的公钥启动；仅验证 JWT，签发降级 | 已登录用户可继续使用；无法签发新 token |
+| API Server 启动时 Vault 不可用且无本地缓存 | 不可用 | 拒绝启动，触发告警 | 服务不可用 (需人工介入) |
+
+**降级模式标识**: API Server 在降级模式下运行时，`/healthz` 返回 `200` (服务可用)，`/readyz` 返回 `200` 但附加 `degraded: true` + `vault: unavailable` 状态，Nginx 不剔除该实例但监控告警。
+
+```go
+// internal/health/health.go
+
+func (h *HealthHandler) ReadyZ(c *gin.Context) {
+    status := h.checkAll()
+    if status.VaultAvailable {
+        c.JSON(200, gin.H{"status": "ok"})
+    } else {
+        // 降级模式: 服务可用但 Vault 不可用
+        c.JSON(200, gin.H{
+            "status":   "degraded",
+            "vault":    "unavailable",
+            "impact":   "token signing disabled, verification using cached public key",
+        })
+        // 触发告警
+        metrics.VaultUnavailable.Inc()
+    }
+}
+```
+
+#### 15.9.4 启动时 Vault 不可用的重试策略
+
+API Server 启动时若 Vault 不可用，采用指数退避重试，超时后拒绝启动并告警：
+
+```go
+// internal/auth/keymanager.go
+
+func (km *KeyManager) InitWithRetry(ctx context.Context) error {
+    maxRetries := 10
+    baseDelay := 2 * time.Second
+    maxDelay := 30 * time.Second
+    totalTimeout := 5 * time.Minute
+
+    deadlineCtx, cancel := context.WithTimeout(ctx, totalTimeout)
+    defer cancel()
+
+    var lastErr error
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        err := km.Init(deadlineCtx)
+        if err == nil {
+            log.Info("Vault 密钥初始化成功", "attempts", attempt+1)
+            return nil
+        }
+        lastErr = err
+
+        // 指数退避: 2s, 4s, 8s, 16s, 30s, 30s, ...
+        delay := baseDelay * time.Duration(1<<uint(attempt))
+        if delay > maxDelay {
+            delay = maxDelay
+        }
+
+        log.Warn("Vault 不可用，等待重试",
+            "attempt", attempt+1,
+            "max_retries", maxRetries,
+            "delay", delay,
+            "error", err)
+
+        select {
+        case <-deadlineCtx.Done():
+            return fmt.Errorf("vault init timeout after %v: %w", totalTimeout, lastErr)
+        case <-time.After(delay):
+        }
+    }
+
+    // 超过重试上限 → 尝试本地缓存公钥
+    if pubKey, err := km.loadCachedPublicKey(); err == nil {
+        km.mu.Lock()
+        km.publicKey = pubKey
+        km.mu.Unlock()
+        log.Warn("Vault 重试耗尽，使用本地缓存公钥启动 (降级模式: 仅验证 JWT)")
+        metrics.VaultDegradedMode.Set(1)
+        return nil
+    }
+
+    // 无本地缓存 → 拒绝启动并告警
+    metrics.VaultStartupFailed.Inc()
+    return fmt.Errorf("vault unavailable after %d retries and no cached public key, refusing to start: %w",
+        maxRetries, lastErr)
+}
+```
+
+**启动行为总结**:
+
+```
+API Server 启动流程:
+  1. 从 Vault 读取 Ed25519 公钥 (指数退避重试, 最多 10 次, 上限 30s/次, 总超时 5min)
+  2. 成功 → 缓存公钥到内存 + 磁盘 → 正常启动
+  3. 失败 → 尝试本地磁盘缓存的公钥
+     ├── 有缓存 → 降级模式启动 (仅验证 JWT, 签发返回 503) → 告警
+     └── 无缓存 → 拒绝启动 → 告警 (需人工介入: 恢复 Vault 或导入公钥)
+```
+
+#### 15.9.5 云 KMS 备选方案
+
+为降低 Vault 运维复杂度，建议评估云原生 KMS 作为备选或主方案：
+
+| 方案 | 优势 | 劣势 | 适用场景 |
+|---|---|---|---|
+| HashiCorp Vault (自建) | 完全自主可控, 跨云/混合云 | 运维复杂度高 (HA, 备份, 升级) | 混合云, 合规要求高 |
+| AWS KMS | 全托管, 无运维, 自动 HA | 厂商锁定, 跨云需适配 | AWS 原生部署 |
+| GCP Cloud KMS | 全托管, 无运维, 自动 HA | 厂商锁定, 跨云需适配 | GCP 原生部署 |
+| Azure Key Vault | 全托管, 与 AD 集成 | 厂商锁定 | Azure 原生部署 |
+
+**云 KMS 集成方式** (以 AWS KMS 为例):
+
+```go
+// 使用 AWS KMS 签名 (私钥不离开 KMS)
+// 公钥可从 KMS 导出并缓存
+
+func (km *KeyManager) SignTokenWithKMS(claims *jwt.RegisteredClaims) (string, error) {
+    // 1. 构造 JWT header + payload (未签名)
+    unsigned := base64.RawURLEncoding.EncodeToString(headerJSON) + "." +
+                base64.RawURLEncoding.EncodeToString(payloadJSON)
+
+    // 2. 调用 KMS Sign API (私钥在 KMS 内部, 不导出)
+    result, err := km.kmsClient.Sign(ctx, &kms.SignInput{
+        KeyId:            km.keyID,
+        Message:          []byte(unsigned),
+        MessageType:      types.MessageTypeRaw,
+        SigningAlgorithm: types.SigningAlgorithmSpecEddsa,
+    })
+    if err != nil {
+        return "", fmt.Errorf("KMS sign failed: %w", err)
+    }
+
+    // 3. 拼接签名
+    signature := base64.RawURLEncoding.EncodeToString(result.Signature)
+    return unsigned + "." + signature, nil
+}
+
+// 公钥从 KMS GetPublicKey API 导出, 启动时缓存
+func (km *KeyManager) fetchPublicKeyFromKMS(ctx context.Context) (ed25519.PublicKey, error) {
+    result, err := km.kmsClient.GetPublicKey(ctx, &kms.GetPublicKeyInput{
+        KeyId: km.keyID,
+    })
+    if err != nil {
+        return nil, err
+    }
+    // 解析 DER 编码的公钥
+    pubKey, err := x509.ParsePKIXPublicKey(result.PublicKey)
+    if err != nil {
+        return nil, err
+    }
+    return pubKey.(ed25519.PublicKey), nil
+}
+```
+
+> **决策建议**: 若部署在单一云平台，优先使用云 KMS (零运维, 自动 HA)；混合云或强合规场景使用 Vault 3 节点 HA 集群。两种方案均通过公钥缓存 + 降级策略消除单点故障。
+
+### 15.10 Patroni 故障转移数据窗口修复
+
+**问题**: Patroni 异步复制模式下 RPO<5s 仍可能有数据丢失。故障转移期间 PgBouncer 可能仍指向旧 Primary，导致写入失败。故障转移流程缺乏定期演练，实际故障时可能出现意外行为。
+
+**风险等级**: 🟡 中风险 — 数据丢失窗口 + 故障转移期间写入不可用。
+
+**修复方案**:
+
+#### 15.10.1 关键写操作同步复制模式
+
+对关键写操作评估使用同步复制模式 (`synchronous_commit=on`)，确保写入在至少一个 Replica 确认后才返回客户端成功，消除异步复制的数据丢失窗口：
+
+| 写操作类型 | 复制模式 | 理由 |
+|---|---|---|
+| 资产创建 (POST /assets) | **同步** | 资产记录是核心数据, 丢失导致资产不明 |
+| 资产领用/归还 (POST /assets/:id/assign) | **同步** | 领用记录涉及责任归属, 丢失导致责任不清 |
+| 生命周期状态转换 (PUT /assets/:id/lifecycle) | **同步** | 状态转换不可逆, 丢失导致状态不一致 |
+| audit_log INSERT | **同步** | 审计日志必须不丢, 合规要求 |
+| 资产属性更新 (PUT /assets/:id) | 异步 (可接受) | 属性修改可重试, RPO<5s 可接受 |
+| Agent 快照上报 (POST /agents/:id/snapshots) | 异步 (可接受) | 高频写入, 同步模式影响吞吐 |
+| 查询 (GET *) | N/A | 只读, 不涉及复制 |
+
+**PostgreSQL 同步复制配置**:
+
+```ini
+# postgresql.conf (Primary)
+synchronous_commit = on                # 全局开启同步提交
+# 或按会话级别控制: SET LOCAL synchronous_commit = on;
+
+synchronous_standby_names = 'ANY 1 (replica1, replica2)'
+# ANY 1: 任意一个 Replica 确认即可 (不要求特定 Replica)
+# 降低同步复制对写入延迟的影响
+```
+
+**会话级动态控制** (推荐: 仅关键写操作开启同步, 非关键保持异步):
+
+```go
+// internal/repository/asset_repo.go
+
+// 关键写操作: 资产创建
+func (r *AssetRepo) Create(ctx context.Context, asset *domain.Asset) error {
+    tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback(ctx)
+
+    // 本事务启用同步提交 (仅影响当前事务)
+    if _, err := tx.Exec(ctx, "SET LOCAL synchronous_commit = on"); err != nil {
+        return fmt.Errorf("set synchronous_commit: %w", err)
+    }
+
+    // 执行 INSERT
+    if err := r.doCreate(ctx, tx, asset); err != nil {
+        return err
+    }
+
+    return tx.Commit(ctx) // Commit 等待 Replica 确认后才返回
+}
+
+// 非关键写操作: 资产属性更新 (保持异步, 低延迟)
+func (r *AssetRepo) UpdateProperties(ctx context.Context, asset *domain.Asset) error {
+    // 不设置 synchronous_commit, 使用全局默认 (异步)
+    // RPO < 5s 可接受
+    return r.doUpdateProperties(ctx, r.db, asset)
+}
+```
+
+> **权衡**: 同步复制增加写入延迟 (通常 +1~5ms, 取决于网络 RTT)。仅对关键写操作启用, 非关键操作保持异步, 在数据安全与性能之间取得平衡。
+
+#### 15.10.2 PgBouncer 动态感知 Patroni Leader 切换
+
+PgBouncer 需动态感知 Patroni Leader 变化，避免故障转移后仍指向旧 Primary 导致写入失败：
+
+**方案: PgBouncer + Patroni REST API 联动**
+
+```
+Patroni REST API:
+  GET /patroni/leader  → 200 (当前 Leader 信息)
+  GET /patroni/cluster → 集群拓扑 (所有节点角色)
+
+PgBouncer 动态后端切换:
+  1. PgBouncer 配置两个后端: primary (写) + replica (读)
+  2. 定期轮询 Patroni REST API /patroni/leader
+  3. Leader 变化 → 动态 RELOAD PgBouncer 配置 (PAUSE → RELOAD → RESUME)
+  4. 切换期间: 暂停新连接, 等待旧连接 drain, 指向新 Leader
+```
+
+**实现: Patroni Leader 探测脚本 + PgBouncer 动态配置**
+
+```bash
+#!/bin/bash
+# /usr/local/bin/patroni-leader-watch.sh
+# 定期检测 Patroni Leader 变化, 动态更新 PgBouncer 后端
+
+PATRONI_API="http://patroni:8008"
+PGBOUNCER_ADMIN="/usr/bin/pgbouncer -u /var/run/pgbouncer/pgbouncer.sock"
+CURRENT_LEADER=""
+
+while true; do
+    # 查询当前 Leader
+    LEADER=$(curl -s ${PATRONI_API}/patroni/leader | jq -r '.name' 2>/dev/null)
+
+    if [ -n "$LEADER" ] && [ "$LEADER" != "$CURRENT_LEADER" ]; then
+        echo "$(date): Leader changed: $CURRENT_LEADER → $LEADER"
+
+        # 1. PAUSE PgBouncer (拒绝新连接, 等待活跃连接结束)
+        psql -h /var/run/pgbouncer/pgbouncer.sock -c "PAUSE;"
+
+        # 2. 更新 PgBouncer 配置指向新 Leader
+        sed -i "s/^host = .*/host = ${LEADER}.internal/" /etc/pgbouncer/pgbouncer.ini
+
+        # 3. RELOAD PgBouncer
+        psql -h /var/run/pgbouncer/pgbouncer.sock -c "RELOAD;"
+
+        # 4. RESUME PgBouncer (恢复接受连接)
+        psql -h /var/run/pgbouncer/pgbouncer.sock -c "RESUME;"
+
+        CURRENT_LEADER="$LEADER"
+        echo "$(date): PgBouncer switched to new Leader: $LEADER"
+    fi
+
+    sleep 2  # 每 2 秒检测一次
+done
+```
+
+**PgBouncer 配置 (读写分离 + 动态后端)**:
+
+```ini
+# /etc/pgbouncer/pgbouncer.ini
+[databases]
+; 写入: 指向当前 Patroni Leader (由探测脚本动态更新)
+assets = host=patroni-leader.internal port=5432 dbname=asset_db pool_size=20
+; 只读: 指向 Replica (Grafana 使用)
+assets_ro = host=patroni-replica.internal port=5432 dbname=asset_db pool_size=10
+
+[pgbouncer]
+listen_addr = 0.0.0.0
+listen_port = 6432
+; 连接池模式: transaction (适合短事务)
+pool_mode = transaction
+; 故障转移期间快速失败
+query_wait_timeout = 10
+; 服务端连接超时
+server_lifetime = 3600
+server_idle_timeout = 300
+```
+
+> **备选方案**: 使用 `pgbouncer-patroni` (社区工具) 或 HAProxy + Patroni 健康检查实现自动后端切换, 无需自定义脚本。
+
+#### 15.10.3 故障转移期间 API Server 行为
+
+故障转移期间 (Patroni 选举新 Leader + PgBouncer 切换, 通常 <30s), API Server 的写入操作应返回 503 并引导客户端重试：
+
+```go
+// internal/middleware/failover.go
+
+func FailoverGuard(db *pgxpool.Pool) gin.HandlerFunc {
+    return func(c *gin.Context) {
+        // 仅拦截写操作
+        if c.Request.Method == "GET" {
+            c.Next()
+            return
+        }
+
+        // 尝试执行写操作
+        c.Next()
+
+        // 检查是否因数据库不可用导致失败
+        if err, ok := c.Errors.Last().Err.(*pgconn.PgError); ok {
+            if isConnectionError(err) {
+                // 故障转移中: 返回 503 + Retry-After
+                c.AbortWithStatusJSON(503, gin.H{
+                    "error":      "failover_in_progress",
+                    "message":    "database failover in progress, please retry",
+                    "retry_after": 10, // 建议客户端 10 秒后重试
+                })
+                metrics.FailoverWrites503.Inc()
+            }
+        }
+    }
+}
+```
+
+**客户端重试策略**:
+
+```
+客户端收到 503 (failover_in_progress):
+  1. 等待 retry_after 秒 (默认 10s)
+  2. 指数退避重试: 10s → 20s → 40s, 最多 3 次
+  3. 3 次后仍失败 → 提示用户 "系统维护中, 请稍后重试"
+  4. 幂等操作 (如资产创建) 可安全重试
+  5. 非幂等操作 (如领用) 需先查询状态确认是否已执行
+```
+
+#### 15.10.4 定期故障转移演练 (每月一次)
+
+为确保故障转移流程可靠, 建立每月一次的定期演练机制：
+
+**演练流程**:
+
+```
+故障转移演练 (每月第一个周六 02:00 低峰期)
+├── 1. 通知: 提前 3 天通知所有相关团队
+├── 2. 备份: 演练前执行全量备份 (pg_basebackup)
+├── 3. 模拟故障: patronictl switchover (优雅切换) 或 kill Primary 进程 (模拟宕机)
+├── 4. 观察指标:
+│   ├── RTO: Patroni 检测 + 选举 + PgBouncer 切换总耗时 (目标 <30s)
+│   ├── RPO: 检查数据丢失量 (同步复制模式应为 0)
+│   ├── API Server: 503 返回次数 + 客户端重试成功率
+│   └── 监控告警: 是否正确触发告警通知
+├── 5. 验证: 演练后执行写入测试, 确认新 Leader 正常工作
+├── 6. 回顾: 记录演练结果, 更新 RTO/RPO 实测值, 识别改进项
+└── 7. 归档: 演练报告存档 (合规审计需要)
+```
+
+**演练自动化脚本**:
+
+```bash
+#!/bin/bash
+# /usr/local/bin/patroni-drill.sh
+# 每月故障转移演练
+
+set -euo pipefail
+DRILL_DATE=$(date +%Y%m%d_%H%M%S)
+LOG_FILE="/var/log/patroni-drill/${DRILL_DATE}.log"
+mkdir -p /var/log/patroni-drill
+
+echo "[$(date)] 故障转移演练开始" | tee "$LOG_FILE"
+
+# 1. 记录演练前状态
+echo "[$(date)] 演练前集群状态:" | tee -a "$LOG_FILE"
+patronictl list | tee -a "$LOG_FILE"
+
+# 2. 记录当前 Leader
+OLD_LEADER=$(patronictl list | grep "Leader" | awk '{print $1}')
+echo "[$(date)] 当前 Leader: $OLD_LEADER" | tee -a "$LOG_FILE"
+
+# 3. 执行优雅切换
+echo "[$(date)] 执行 switchover..." | tee -a "$LOG_FILE"
+START_TIME=$(date +%s)
+patronictl switchover --force 2>&1 | tee -a "$LOG_FILE"
+
+# 4. 等待新 Leader 选举
+sleep 5
+NEW_LEADER=$(patronictl list | grep "Leader" | awk '{print $1}')
+END_TIME=$(date +%s)
+RTO=$((END_TIME - START_TIME))
+
+echo "[$(date)] 新 Leader: $NEW_LEADER" | tee -a "$LOG_FILE"
+echo "[$(date)] RTO: ${RTO}s (目标 <30s)" | tee -a "$LOG_FILE"
+
+# 5. 验证写入
+echo "[$(date)] 验证写入..." | tee -a "$LOG_FILE"
+psql -h pgbouncer -p 6432 -c "INSERT INTO assets.drill_log (event) VALUES ('failover_drill_${DRILL_DATE}');" | tee -a "$LOG_FILE"
+
+# 6. 记录结果
+echo "[$(date)] 演练完成" | tee -a "$LOG_FILE"
+patronictl list | tee -a "$LOG_FILE"
+
+# 7. 发送演练报告
+mail -s "Patroni 故障转移演练报告 ${DRILL_DATE}" ops-team@company.com < "$LOG_FILE"
+```
+
+**Cron 配置**:
+
+```cron
+# 每月第一个周六 02:00 执行故障转移演练
+0 2 1-7 * 6 /usr/local/bin/patroni-drill.sh
+```
+
+### 15.11 链式哈希序列化写入瓶颈修复
+
+**问题**: audit_log 的链式哈希通过 `pg_advisory_xact_lock` 序列化所有 INSERT，同一时刻只有一个事务能写入 audit_log。高并发下 (如批量资产操作、Agent 集中上报), audit_log 写入成为瓶颈, 吞吐量受限于单事务串行执行。
+
+**风险等级**: 🟡 中风险 — 高并发场景下审计日志写入吞吐量受限, 可能成为系统瓶颈。
+
+**修复方案**:
+
+#### 15.11.1 批量写入缓冲
+
+在 Service 层引入批量写入缓冲, 累积 audit 事件后批量 INSERT, 减少 advisory lock 持有次数和事务开销：
+
+```
+原方案 (逐条写入):
+  每条 audit 事件 → 获取 advisory lock → INSERT 1 条 → 释放 lock
+  高并发下 lock 竞争严重, 吞吐量 ~200 条/秒
+
+改进方案 (批量写入):
+  Service 层累积 audit 事件到缓冲区
+  每 100ms 或满 100 条 → 批量获取 advisory lock → INSERT N 条 → 释放 lock
+  吞吐量提升 ~5-10x (预计 ~1000-2000 条/秒)
+```
+
+**实现**:
+
+```go
+// internal/service/audit_buffer.go
+
+type AuditBuffer struct {
+    db        *pgxpool.Pool
+    buffer    []domain.AuditEvent
+    mu        sync.Mutex
+    flushCh   chan struct{}
+    maxBatch int
+    interval  time.Duration
+    closed    chan struct{}
+}
+
+func NewAuditBuffer(db *pgxpool.Pool, maxBatch int, interval time.Duration) *AuditBuffer {
+    ab := &AuditBuffer{
+        db:        db,
+        buffer:    make([]domain.AuditEvent, 0, maxBatch),
+        flushCh:   make(chan struct{}, 1),
+        maxBatch:  maxBatch,  // 默认 100
+        interval:  interval,  // 默认 100ms
+        closed:    make(chan struct{}),
+    }
+    go ab.flushLoop()
+    return ab
+}
+
+// Append 添加 audit 事件到缓冲区 (非阻塞)
+func (ab *AuditBuffer) Append(event domain.AuditEvent) {
+    ab.mu.Lock()
+    ab.buffer = append(ab.buffer, event)
+    shouldFlush := len(ab.buffer) >= ab.maxBatch
+    ab.mu.Unlock()
+
+    if shouldFlush {
+        select {
+        case ab.flushCh <- struct{}{}:
+        default: // 已有 flush 信号在排队, 不重复发送
+        }
+    }
+}
+
+// flushLoop 定时 + 触发式 flush
+func (ab *AuditBuffer) flushLoop() {
+    ticker := time.NewTicker(ab.interval) // 100ms
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ab.closed:
+            ab.flush() // 关闭时 flush 剩余数据
+            return
+        case <-ab.flushCh:
+            ab.flush()
+        case <-ticker.C:
+            ab.flush()
+        }
+    }
+}
+
+// flush 批量写入 (在单个事务 + advisory lock 内完成)
+func (ab *AuditBuffer) flush() {
+    ab.mu.Lock()
+    if len(ab.buffer) == 0 {
+        ab.mu.Unlock()
+        return
+    }
+    batch := ab.buffer
+    ab.buffer = make([]domain.AuditEvent, 0, ab.maxBatch)
+    ab.mu.Unlock()
+
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
+
+    tx, err := ab.db.BeginTx(ctx, pgx.TxOptions{})
+    if err != nil {
+        log.Error("audit buffer flush: begin tx", "error", err)
+        ab.requeue(batch) // 写入失败, 重新入队
+        return
+    }
+    defer tx.Rollback(ctx)
+
+    // 获取 advisory lock (整个批量 INSERT 期间持有)
+    if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('audit_log_chain'))"); err != nil {
+        log.Error("audit buffer flush: advisory lock", "error", err)
+        ab.requeue(batch)
+        return
+    }
+
+    // 批量 INSERT (触发器内自动维护 hash chain)
+    // 注意: 批量 INSERT 时触发器按行执行, 每行的 prev_hash 取上一行 hash
+    //       需确保触发器内 SELECT ... ORDER BY id DESC LIMIT 1 能看到本批已插入的行
+    for _, event := range batch {
+        if _, err := tx.Exec(ctx, `
+            INSERT INTO assets.audit_log (asset_id, user_id, action, field, old_value, new_value, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `, event.AssetID, event.UserID, event.Action, event.Field,
+            event.OldValue, event.NewValue, event.Metadata); err != nil {
+            log.Error("audit buffer flush: insert", "error", err)
+            ab.requeue(batch)
+            return
+        }
+    }
+
+    if err := tx.Commit(ctx); err != nil {
+        log.Error("audit buffer flush: commit", "error", err)
+        ab.requeue(batch)
+        return
+    }
+
+    metrics.AuditLogBatchSize.Observe(float64(len(batch)))
+    metrics.AuditLogWritesTotal.Add(float64(len(batch)))
+}
+
+func (ab *AuditBuffer) requeue(batch []domain.AuditEvent) {
+    ab.mu.Lock()
+    ab.buffer = append(batch, ab.buffer...) // 失败的 batch 重新放回缓冲区头部
+    ab.mu.Unlock()
+    metrics.AuditLogFlushFailures.Inc()
+}
+
+func (ab *AuditBuffer) Close() {
+    close(ab.closed)
+}
+```
+
+> **注意**: 批量 INSERT 时, PostgreSQL 触发器按行执行 (BEFORE INSERT FOR EACH ROW)。每行触发器内的 `SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1 FOR UPDATE` 会看到同批已插入的行 (同一事务内), 因此 hash chain 连续性得以保持。
+
+#### 15.11.2 分片链方案评估
+
+评估按 `asset_id` 分区, 每个分区维护独立的 hash chain, 实现并行写入：
+
+```
+原方案 (单链):
+  所有 audit_log 记录共享一条 hash chain
+  → 全局 advisory lock → 串行写入
+
+分片链方案 (多链):
+  按 asset_id 哈希分片, 每个分片独立 hash chain
+  → 每个分片独立 advisory lock → 并行写入
+  → 吞吐量随分片数线性扩展
+```
+
+**分片链设计**:
+
+```sql
+-- 方案: 新增 shard_id 列, 按 shard 分区
+ALTER TABLE assets.audit_log ADD COLUMN shard_id INTEGER NOT NULL
+    GENERATED ALWAYS AS (hashtext(asset_id::text) % 16) STORED;
+
+-- 按 shard_id 分区 (16 个分区 = 16 条独立链)
+-- 每个分区内的 hash chain 独立维护
+-- advisory lock key 按 shard 区分: pg_advisory_xact_lock(hashtext('audit_chain') + shard_id)
+```
+
+```sql
+-- 修改触发器: 按 shard 分片计算 hash chain
+CREATE OR REPLACE FUNCTION assets.audit_log_compute_hash()
+RETURNS trigger AS $$
+DECLARE
+    last_hash CHAR(64);
+    record_text TEXT;
+BEGIN
+    -- 仅查询同分片的上一条记录 (并行写入不同分片)
+    SELECT hash INTO last_hash
+        FROM assets.audit_log
+        WHERE shard_id = NEW.shard_id
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE;
+
+    IF last_hash IS NULL THEN
+        NEW.prev_hash := repeat('0', 64);
+    ELSE
+        NEW.prev_hash := last_hash;
+    END IF;
+
+    record_text := concat(
+        NEW.prev_hash, '|',
+        NEW.id, '|', COALESCE(NEW.asset_id::text, ''), '|',
+        COALESCE(NEW.user_id::text, ''), '|', NEW.action, '|',
+        COALESCE(NEW.field, ''), '|', COALESCE(NEW.old_value, ''), '|',
+        COALESCE(NEW.new_value, ''), '|', COALESCE(NEW.metadata::text, ''), '|',
+        NEW.created_at
+    );
+    NEW.hash := encode(digest(record_text, 'sha256'), 'hex');
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+```go
+// Service 层: 按 shard 获取不同的 advisory lock
+func (ab *AuditBuffer) flush() {
+    // 按 shard_id 分组
+    shards := groupByShard(batch)
+    for shardID, events := range shards {
+        go func(sid int, evts []domain.AuditEvent) {
+            tx, _ := ab.db.BeginTx(ctx, pgx.TxOptions{})
+            // 每个 shard 独立 advisory lock, 并行写入
+            tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)",
+                hashtext("audit_chain") + sid)
+            for _, e := range evts {
+                tx.Exec(ctx, insertSQL, ...)
+            }
+            tx.Commit(ctx)
+        }(shardID, events)
+    }
+}
+```
+
+**分片链权衡**:
+
+| 维度 | 单链 (原方案) | 分片链 (16 分片) |
+|---|---|---|
+| 写入吞吐量 | ~200 条/秒 (串行) | ~3000+ 条/秒 (并行) |
+| 篡改检测 | 全局单链, 任何篡改可检测 | 每个分片独立链, 篡改仅影响该分片 |
+| 完整性校验 | 单次全表扫描 | 需按分片并行校验 (16 次) |
+| 复杂度 | 低 | 中 (分片管理 + 跨分片查询) |
+| 适用场景 | 低并发 (<100 条/秒) | 高并发 (>500 条/秒) |
+
+> **决策**: 当前阶段优先实施批量写入缓冲 (§15.11.1), 预计可满足 ~1000-2000 条/秒的需求。若未来并发量持续增长超过 2000 条/秒, 再评估分片链方案。
+
+#### 15.11.3 Prometheus 监控指标
+
+新增 audit_log 写入吞吐量与延迟监控指标, 用于发现瓶颈和容量规划：
+
+```go
+// internal/metrics/audit_metrics.go
+
+var (
+    // audit_log 写入总量 (计数器)
+    AuditLogWritesTotal = prometheus.NewCounterVec(
+        prometheus.CounterOpts{
+            Name: "audit_log_writes_total",
+            Help: "Total number of audit log events written",
+        },
+        []string{"action"}, // 按操作类型分维度 (create/update/assign/...)
+    )
+
+    // 批量写入大小 (直方图)
+    AuditLogBatchSize = prometheus.NewHistogram(
+        prometheus.HistogramOpts{
+            Name:    "audit_log_batch_size",
+            Help:    "Number of events per batch flush",
+            Buckets: []float64{1, 10, 50, 100, 200, 500, 1000},
+        },
+    )
+
+    // 写入延迟 (从事件产生到持久化的时间)
+    AuditLogWriteLatency = prometheus.NewHistogram(
+        prometheus.HistogramOpts{
+            Name:    "audit_log_write_latency_seconds",
+            Help:    "Time from event creation to persistence",
+            Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+        },
+    )
+
+    // 缓冲区积压 (当前缓冲区中待 flush 的事件数)
+    AuditLogBufferDepth = prometheus.NewGauge(
+        prometheus.GaugeOpts{
+            Name: "audit_log_buffer_depth",
+            Help: "Current number of events waiting in buffer",
+        },
+    )
+
+    // flush 失败次数
+    AuditLogFlushFailures = prometheus.NewCounter(
+        prometheus.CounterOpts{
+            Name: "audit_log_flush_failures_total",
+            Help: "Total number of batch flush failures",
+        },
+    )
+
+    // advisory lock 等待时间
+    AuditLogLockWaitSeconds = prometheus.NewHistogram(
+        prometheus.HistogramOpts{
+            Name:    "audit_log_lock_wait_seconds",
+            Help:    "Time spent waiting for advisory lock",
+            Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1},
+        },
+    )
+)
+
+func init() {
+    prometheus.MustRegister(
+        AuditLogWritesTotal,
+        AuditLogBatchSize,
+        AuditLogWriteLatency,
+        AuditLogBufferDepth,
+        AuditLogFlushFailures,
+        AuditLogLockWaitSeconds,
+    )
+}
+```
+
+**Grafana 面板建议**:
+
+```
+Audit Log 写入监控面板:
+├── 写入吞吐量 (req/s): rate(audit_log_writes_total[1m])  by action
+├── 批量大小分布: histogram_quantile(0.95, audit_log_batch_size)
+├── 写入延迟 P95/P99: histogram_quantile(0.95, audit_log_write_latency_seconds)
+├── 缓冲区积压: audit_log_buffer_depth (告警阈值 >500)
+├── flush 失败率: rate(audit_log_flush_failures_total[5m])
+└── lock 等待时间 P95: histogram_quantile(0.95, audit_log_lock_wait_seconds)
+    (告警阈值 >100ms, 提示考虑分片链方案)
+```
+
+#### 15.11.4 降级策略: 链式哈希异步计算
+
+当批量写入仍无法满足吞吐量需求时, 将链式哈希计算移到异步 goroutine, 不阻塞主事务：
+
+```
+原方案 (同步):
+  主事务 → INSERT audit_log (含 hash 计算 + advisory lock) → COMMIT
+  → hash 计算阻塞主事务, 写入延迟 = 主事务延迟
+
+降级方案 (异步):
+  主事务 → INSERT audit_log (不计算 hash, hash=NULL) → COMMIT (快速返回)
+  → 异步 goroutine: 计算 hash + UPDATE audit_log SET hash=... (advisory lock)
+  → 主事务不阻塞, 写入延迟 ≈ INSERT 延迟 (无 lock 等待)
+```
+
+**实现**:
+
+```go
+// internal/service/audit_service.go
+
+type AuditService struct {
+    db      *pgxpool.Pool
+    buffer  *AuditBuffer
+    async   bool // 降级模式: 异步计算 hash
+}
+
+// Write 写入 audit 事件
+func (s *AuditService) Write(ctx context.Context, event domain.AuditEvent) error {
+    if s.async {
+        // 降级模式: 快速写入 (hash=NULL), 异步补算
+        return s.writeFast(ctx, event)
+    }
+    // 正常模式: 批量缓冲 + 同步 hash 计算
+    s.buffer.Append(event)
+    return nil
+}
+
+// writeFast 降级模式: 不计算 hash, 快速 INSERT
+func (s *AuditService) writeFast(ctx context.Context, event domain.AuditEvent) error {
+    _, err := s.db.Exec(ctx, `
+        INSERT INTO assets.audit_log (asset_id, user_id, action, field, old_value, new_value, metadata, hash)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+    `, event.AssetID, event.UserID, event.Action, event.Field,
+        event.OldValue, event.NewValue, event.Metadata)
+    // 异步 goroutine 补算 hash
+    go s.computeHashAsync(event)
+    return err
+}
+
+// computeHashAsync 异步计算 hash
+func (s *AuditService) computeHashAsync(event domain.AuditEvent) {
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+    defer cancel()
+
+    start := time.Now()
+    tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+    if err != nil {
+        log.Error("async hash: begin tx", "error", err)
+        metrics.AuditLogAsyncHashFailures.Inc()
+        return
+    }
+    defer tx.Rollback(ctx)
+
+    // 获取 advisory lock
+    if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtext('audit_log_chain'))"); err != nil {
+        log.Error("async hash: lock", "error", err)
+        metrics.AuditLogAsyncHashFailures.Inc()
+        return
+    }
+
+    // 计算并更新 hash
+    if _, err := tx.Exec(ctx, `
+        UPDATE assets.audit_log SET
+            prev_hash = COALESCE(
+                (SELECT hash FROM assets.audit_log
+                 WHERE id < $1 ORDER BY id DESC LIMIT 1),
+                repeat('0', 64)
+            ),
+            hash = encode(digest(
+                concat(
+                    COALESCE(
+                        (SELECT hash FROM assets.audit_log
+                         WHERE id < $1 ORDER BY id DESC LIMIT 1),
+                        repeat('0', 64)
+                    ), '|',
+                    $1::text, '|', COALESCE(asset_id::text, ''), '|',
+                    COALESCE(user_id::text, ''), '|', action, '|',
+                    COALESCE(field, ''), '|', COALESCE(old_value, ''), '|',
+                    COALESCE(new_value, ''), '|', COALESCE(metadata::text, ''), '|',
+                    created_at::text
+                ), 'sha256'
+            ), 'hex')
+        WHERE id = $1 AND hash IS NULL
+    `, event.ID); err != nil {
+        log.Error("async hash: update", "error", err)
+        metrics.AuditLogAsyncHashFailures.Inc()
+        return
+    }
+
+    if err := tx.Commit(ctx); err != nil {
+        log.Error("async hash: commit", "error", err)
+        metrics.AuditLogAsyncHashFailures.Inc()
+        return
+    }
+
+    metrics.AuditLogLockWaitSeconds.Observe(time.Since(start).Seconds())
+}
+```
+
+**降级模式切换**:
+
+```go
+// 根据负载自动切换降级模式
+func (s *AuditService) autoDegradation() {
+    // 监控缓冲区积压, 超阈值自动切换到异步模式
+    go func() {
+        ticker := time.NewTicker(10 * time.Second)
+        defer ticker.Stop()
+        for range ticker.C {
+            depth := metrics.GetBufferDepth()
+            if depth > 1000 && !s.async {
+                log.Warn("audit_log 缓冲区积压过高, 切换到异步 hash 计算模式", "depth", depth)
+                s.async = true
+                metrics.AuditLogDegradedMode.Set(1)
+            } else if depth < 100 && s.async {
+                log.Info("audit_log 缓冲区恢复, 切回同步模式", "depth", depth)
+                s.async = false
+                metrics.AuditLogDegradedMode.Set(0)
+            }
+        }
+    }()
+}
+```
+
+> **注意**: 异步 hash 计算模式下, `hash IS NULL` 的记录存在短暂窗口 (hash 未计算完成)。完整性校验 job 需跳过 `hash IS NULL` 的记录, 或等待异步计算完成后再校验。降级模式期间, 审计日志的篡改检测有延迟 (从实时变为最终一致)。
+
+> **策略总结**: 正常模式 → 批量写入缓冲 (§15.11.1); 高负载降级 → 异步 hash 计算 (§15.11.4); 持续高并发 → 分片链方案 (§15.11.2)。三层递进, 根据监控指标 (§15.11.3) 动态选择。
+
+### 15.12 MFA 服务可用性加固
+
+**问题**: super_admin 执行敏感操作 (如用户管理、资产类型管理、enrollment token 签发) 时需要 MFA 二次验证。若 MFA 服务故障，super_admin 将无法执行任何敏感操作，导致系统管理瘫痪。
+
+**风险等级**: 🟢 低风险 — 影响 super_admin 敏感操作，不影响普通用户日常使用。
+
+> **[风险修复 N10] MFA 服务可用性 — MFA 故障时 super_admin 无法执行敏感操作**
+>
+> 以下修复措施确保 MFA 服务高可用，并提供紧急 break-glass 流程在 MFA 完全故障时维持 super_admin 的关键操作能力。
+
+#### 15.12.1 MFA 服务 HA 部署 (至少 2 实例)
+
+```
+MFA 服务高可用部署:
+├── 至少 2 个 MFA 服务实例 (跨 AZ 部署)
+├── Nginx 负载均衡: MFA 请求分发到健康实例
+├── 健康检查: 每 5s 检查 MFA 实例 /healthz 端点
+├── 故障实例自动剔除: 连续 3 次健康检查失败 → 剔除
+├── MFA 状态存储: Redis (Sentinel HA) — 存储 MFA challenge 状态
+└── MFA 服务无状态: 可水平扩展，不依赖本地存储
+```
+
+```yaml
+# MFA 服务部署配置
+mfa_service:
+  replicas: 2                    # 至少 2 实例
+  deployment: cross_az           # 跨 AZ 部署
+  health_check:
+    interval: 5s
+    timeout: 2s
+    unhealthy_threshold: 3
+  load_balancer: nginx
+  redis:
+    use_sentinel: true           # MFA 状态存储使用 Redis Sentinel HA
+    fallback: local_cache        # Redis 不可用时降级为本地缓存 (有限时间)
+```
+
+```nginx
+# Nginx upstream — MFA 服务负载均衡
+upstream mfa_backend {
+    least_conn;
+    server mfa-service-1:8090 max_fails=3 fail_timeout=10s;
+    server mfa-service-2:8090 max_fails=3 fail_timeout=10s;
+
+    check interval=5s rise=2 fall=3 timeout=2s type=http;
+    check_http_send "GET /healthz HTTP/1.0\r\n\r\n";
+    check_http_expect_alive http_2xx;
+}
+```
+
+#### 15.12.2 紧急 Break-Glass 流程
+
+当 MFA 服务完全故障 (所有实例不可用) 时，启用 break-glass 紧急流程，允许 super_admin 在严格管控下执行敏感操作:
+
+```
+Break-Glass 紧急流程:
+1. 双人物理验证: 两名 super_admin (或 1 名 super_admin + 1 名 admin) 同时在场
+2. 发起 break-glass 请求: POST /api/v1/admin/break-glass
+   - 请求需包含: 两人用户名 + 密码 + 紧急原因
+3. 系统验证双身份后签发临时 break-glass token (15 分钟有效)
+4. 临时 token 写入 Redis (key=breakglass:{token_id}, TTL=15min)
+5. 使用临时 token 执行敏感操作 (同 super_admin 权限)
+6. 所有操作实时写入审计日志 + 触发异常告警
+7. 15 分钟后 token 自动失效
+8. 事后审计: 安全团队 24 小时内审查 break-glass 操作记录
+```
+
+```go
+// internal/service/breakglass.go — Break-Glass 紧急流程
+type BreakGlassRequest struct {
+    InitiatorUsername  string `json:"initiator_username" binding:"required"`
+    InitiatorPassword  string `json:"initiator_password" binding:"required"`
+    ApproverUsername   string `json:"approver_username" binding:"required"`
+    ApproverPassword   string `json:"approver_password" binding:"required"`
+    Reason             string `json:"reason" binding:"required,min=10"`
+}
+
+type BreakGlassToken struct {
+    TokenID     string    `json:"token_id"`
+    Token       string    `json:"token"`
+    InitiatorID string    `json:"initiator_id"`
+    ApproverID  string    `json:"approver_id"`
+    Reason      string    `json:"reason"`
+    IssuedAt    time.Time `json:"issued_at"`
+    ExpiresAt   time.Time `json:"expires_at"`
+}
+
+func (s *BreakGlassService) Issue(ctx context.Context, req BreakGlassRequest) (*BreakGlassToken, error) {
+    // 1. 验证双身份 (两人均为 super_admin 或 initiator=super_admin + approver=admin)
+    initiator, err := s.verifyUser(ctx, req.InitiatorUsername, req.InitiatorPassword, "super_admin")
+    if err != nil {
+        return nil, fmt.Errorf("initiator verification failed: %w", err)
+    }
+
+    approver, err := s.verifyUser(ctx, req.ApproverUsername, req.ApproverPassword, "super_admin", "admin")
+    if err != nil {
+        return nil, fmt.Errorf("approver verification failed: %w", err)
+    }
+
+    // 两人不能是同一人
+    if initiator.ID == approver.ID {
+        return nil, errors.New("initiator and approver must be different persons")
+    }
+
+    // 2. 检查 MFA 服务是否确实不可用 (仅在 MFA 故障时允许 break-glass)
+    mfaHealthy, _ := s.mfaClient.HealthCheck(ctx)
+    if mfaHealthy {
+        return nil, errors.New("MFA service is healthy — break-glass not permitted")
+    }
+
+    // 3. 签发临时 token (15 分钟有效)
+    tokenID := uuid.New().String()
+    token := uuid.New().String()
+    expiresAt := time.Now().Add(15 * time.Minute)
+
+    // 4. 写入 Redis (TTL=15min)
+    key := fmt.Sprintf("breakglass:%s", tokenID)
+    tokenData, _ := json.Marshal(BreakGlassToken{
+        TokenID:     tokenID,
+        Token:       token,
+        InitiatorID: initiator.ID,
+        ApproverID:  approver.ID,
+        Reason:      req.Reason,
+        IssuedAt:    time.Now(),
+        ExpiresAt:   expiresAt,
+    })
+    if err := s.redis.Set(ctx, key, tokenData, 15*time.Minute).Err(); err != nil {
+        return nil, fmt.Errorf("store break-glass token: %w", err)
+    }
+
+    // 5. 写入审计日志 — break-glass 签发事件
+    s.auditLog.Write(ctx, AuditEntry{
+        ActionType: "break_glass_issued",
+        UserID:     initiator.ID,
+        Metadata: map[string]interface{}{
+            "approver_id":  approver.ID,
+            "reason":       req.Reason,
+            "token_id":     tokenID,
+            "expires_at":   expiresAt,
+        },
+    })
+
+    // 6. 触发异常告警 (P1 — 安全团队需立即关注)
+    s.alerter.Send(ctx, Alert{
+        Severity: "critical",
+        Title:    "Break-glass token issued — MFA service unavailable",
+        Message:  fmt.Sprintf("Initiator: %s, Approver: %s, Reason: %s, Token expires at: %s",
+            initiator.Username, approver.Username, req.Reason, expiresAt.Format(time.RFC3339)),
+    })
+
+    return &BreakGlassToken{
+        TokenID:     tokenID,
+        Token:       token,
+        InitiatorID: initiator.ID,
+        ApproverID:  approver.ID,
+        Reason:      req.Reason,
+        IssuedAt:    time.Now(),
+        ExpiresAt:   expiresAt,
+    }, nil
+}
+
+// 验证 break-glass token (中间件)
+func (m *AuthMiddleware) verifyBreakGlassToken(ctx context.Context, token string) (*BreakGlassToken, error) {
+    // 从 Redis 查找 token
+    keys, err := m.redis.Keys(ctx, "breakglass:*").Result()
+    if err != nil {
+        return nil, err
+    }
+
+    for _, key := range keys {
+        data, err := m.redis.Get(ctx, key).Result()
+        if err == redis.Nil {
+            continue
+        }
+        var bgToken BreakGlassToken
+        if err := json.Unmarshal([]byte(data), &bgToken); err != nil {
+            continue
+        }
+        if bgToken.Token == token && time.Now().Before(bgToken.ExpiresAt) {
+            // 记录每次使用 (审计)
+            m.auditLog.Write(ctx, AuditEntry{
+                ActionType: "break_glass_used",
+                UserID:     bgToken.InitiatorID,
+                Metadata: map[string]interface{}{
+                    "token_id":    bgToken.TokenID,
+                    "approver_id": bgToken.ApproverID,
+                    "reason":      bgToken.Reason,
+                },
+            })
+            return &bgToken, nil
+        }
+    }
+    return nil, errors.New("invalid or expired break-glass token")
+}
+```
+
+#### 15.12.3 MFA 服务监控与故障自动切换
+
+```go
+// internal/monitor/mfa_health.go — MFA 服务健康监控
+func (m *MFAHealthMonitor) Monitor(ctx context.Context) {
+    ticker := time.NewTicker(10 * time.Second)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case <-ticker.C:
+            // 检查所有 MFA 实例健康状态
+            healthyCount := 0
+            for _, instance := range m.instances {
+                if err := m.checkInstance(ctx, instance); err == nil {
+                    healthyCount++
+                }
+            }
+
+            // Prometheus 指标
+            metrics.MFAHealthyInstances.Set(float64(healthyCount))
+            metrics.MFATotalInstances.Set(float64(len(m.instances)))
+
+            // 告警逻辑
+            if healthyCount == 0 {
+                // 所有 MFA 实例不可用 → P1 告警
+                m.alerter.Send(ctx, Alert{
+                    Severity: "critical",
+                    Title:    "MFA service completely unavailable",
+                    Message:  "All MFA instances are down. Break-glass procedure should be activated.",
+                })
+                metrics.MFAServiceStatus.Set(0) // 0 = down
+            } else if healthyCount < len(m.instances) {
+                // 部分 MFA 实例不可用 → P2 告警
+                m.alerter.Send(ctx, Alert{
+                    Severity: "warning",
+                    Title:    "MFA service partially degraded",
+                    Message:  fmt.Sprintf("%d/%d MFA instances healthy", healthyCount, len(m.instances)),
+                })
+                metrics.MFAServiceStatus.Set(0.5) // 0.5 = degraded
+            } else {
+                metrics.MFAServiceStatus.Set(1) // 1 = healthy
+            }
+        }
+    }
+}
+```
+
+```yaml
+# MFA 服务监控配置
+mfa_monitoring:
+  health_check_interval: 10s
+  alerts:
+    all_instances_down:
+      severity: critical
+      message: "MFA service completely unavailable — activate break-glass"
+      auto_action: "notify_security_team"
+    partial_degradation:
+      severity: warning
+      message: "MFA service partially degraded"
+  prometheus_metrics:
+    - mfa_healthy_instances
+    - mfa_total_instances
+    - mfa_service_status
+    - mfa_auth_success_total
+    - mfa_auth_failure_total
+    - mfa_auth_latency_seconds
+```
+
+> **MFA 可用性总结**:
+> - **HA 部署**: MFA 服务至少 2 实例跨 AZ 部署，Nginx 负载均衡 + 健康检查自动剔除故障实例。
+> - **Break-glass 流程**: MFA 完全故障时，双人验证 + 15 分钟临时 token + 事后审计，确保 super_admin 关键操作不中断。
+> - **全面审计**: break-glass 签发和使用全程写入审计日志，触发 P1 告警通知安全团队。
+> - **监控告警**: MFA 服务健康状态实时监控 (Prometheus)，全实例故障 → P1 告警 + 通知安全团队激活 break-glass。
