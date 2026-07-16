@@ -58,13 +58,11 @@ func (ca *CacheAside) GetOrSet(ctx context.Context, key string, ttl time.Duratio
 	// Double check
 	val, err = ca.cache.Get(ctx, key)
 	if err == nil {
-		mu.Unlock()
 		if val == nullMarker {
 			return "", ErrNotFound
 		}
 		return val, nil
 	}
-	mu.Unlock()
 
 	// 3. 调 loader
 	loaded, err := loader()

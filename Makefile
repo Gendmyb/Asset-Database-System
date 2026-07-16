@@ -42,3 +42,26 @@ clean:
 # 依赖
 deps:
 	cd assetserver && go mod tidy
+
+# === Phase 7: Agent 交叉编译 (linux/darwin/windows × amd64/arm64) ===
+
+AGENT_SRC := ./cmd/collection-agent
+OUT_DIR := build
+
+agent-linux:
+	cd assetserver && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o $(OUT_DIR)/agent-linux-amd64 $(AGENT_SRC)
+
+agent-darwin-amd64:
+	cd assetserver && GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o $(OUT_DIR)/agent-darwin-amd64 $(AGENT_SRC)
+
+agent-darwin-arm64:
+	cd assetserver && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o $(OUT_DIR)/agent-darwin-arm64 $(AGENT_SRC)
+
+agent-windows:
+	cd assetserver && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o $(OUT_DIR)/agent-windows-amd64.exe $(AGENT_SRC)
+
+build-agent-all: agent-linux agent-darwin-amd64 agent-darwin-arm64 agent-windows
+	@ls -lh assetserver/$(OUT_DIR)/
+
+build-all: build build-agent-all
+	@echo "All binaries built"
