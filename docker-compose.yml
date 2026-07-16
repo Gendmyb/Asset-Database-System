@@ -1,0 +1,75 @@
+# Asset Database System — Docker Compose
+# 对应架构文档 §13.1 开发环境 + §13.2 生产环境
+# 开发环境: PostgreSQL 16 + Redis 7 + API Server + Grafana
+
+version: "3.8"
+
+services:
+  # ---- PostgreSQL 16 (SOT) ----
+  postgres:
+    image: postgres:16-alpine
+    container_name: asset-db-pg
+    environment:
+      POSTGRES_DB: assetdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: devpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./assetserver/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d assetdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ---- Redis 7 (缓存 + 事件总线) ----
+  redis:
+    image: redis:7-alpine
+    container_name: asset-db-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---- API Server (Go + Gin) ----
+  api-server:
+    build:
+      context: ./assetserver
+      dockerfile: Dockerfile
+    container_name: asset-db-api
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_HOST: "0.0.0.0"
+      SERVER_PORT: "8080"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: assetdb
+      DB_USER: postgres
+      DATABASE_PASSWORD: devpassword
+      REDIS_ADDR: redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ---- Grafana OSS (仪表盘) ----
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: asset-db-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: ""
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
