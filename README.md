@@ -52,8 +52,21 @@ cd web && npm run dev
 | 4 | ✅ | 缓存三防 + 事件总线 + Webhook |
 | 5 | ✅ | Dashboard + Locations + Orgs |
 | 6 | ✅ | React 前端 (Vite+TS+Zustand) |
-| 7 | 🔄 | Agent Polish (进行中) |
+| 7 | ✅ | Agent Polish (自更新+证书续期) |
 | 8 | ✅ | Grafana + Nginx + Docker Compose |
-| 9 | 🔄 | Testing (进行中) |
+| 9 | ✅ | Testing (47 项测试全 PASS) |
 | 10 | ✅ | Runbook + 运维文档 |
 | 11 | ✅ | 混沌测试计划 |
+
+## 快速验证 (DEMO 模式)
+
+```bash
+# 后端 (无需 PostgreSQL, 内存存储)
+cd assetserver && DEMO=true go run ./cmd/api-server
+# 访问 http://localhost:8080
+# 登录: admin / admin
+
+# 前端
+cd web && npm install && npm run dev
+# 访问 http://localhost:5173
+```

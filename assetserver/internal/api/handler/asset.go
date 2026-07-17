@@ -101,7 +101,7 @@ func (h *AssetHandler) ListAssets(c *gin.Context) {
 // CreateAsset POST /api/v1/assets
 func (h *AssetHandler) CreateAsset(c *gin.Context) {
 	var input struct {
-		AssetTag       string                 `json:"asset_tag" binding:"required"`
+		AssetTag       string                 `json:"asset_tag"`
 		Name           string                 `json:"name" binding:"required"`
 		TypeID         string                 `json:"type_id" binding:"required"`
 		SerialNumber   *string                `json:"serial_number"`
@@ -121,6 +121,10 @@ func (h *AssetHandler) CreateAsset(c *gin.Context) {
 	}
 	if input.Status == "" {
 		input.Status = "available"
+	}
+	// 自动生成编号
+	if input.AssetTag == "" {
+		input.AssetTag = "AST-" + uuid.New().String()[:8]
 	}
 
 	now := time.Now()
