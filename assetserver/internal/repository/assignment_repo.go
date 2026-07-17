@@ -84,7 +84,7 @@ func (r *AssignmentRepo) Release(ctx context.Context, assetID string) error {
 }
 
 // Transfer 转移资产: 字典序锁定防止死锁
-func (r *AssignmentRepo) Transfer(ctx context.Context, assetID, toUserID string) error {
+func (r *AssignmentRepo) Transfer(ctx context.Context, assetID, toUserID, userID string) error {
 	ids := lock.SortedAssetIDs([]string{assetID})
 	if err := lock.ValidateSortedOrder(ids); err != nil {
 		return err
@@ -113,8 +113,8 @@ func (r *AssignmentRepo) Transfer(ctx context.Context, assetID, toUserID string)
 
 	_, err = r.pool.Exec(ctx,
 		`INSERT INTO assets.assignments (id, asset_id, org_id, assigned_to, assigned_by, status, assigned_at, version)
-		 VALUES ($1,$2,$3,$4,$2,'active','transfer',NOW(),1)`,
-		uuid.New().String(), assetID, orgID, toUserID)
+		 VALUES ($1,$2,$3,$4,$5,'active',NOW(),1)`,
+		uuid.New().String(), assetID, orgID, toUserID, userID)
 	if err != nil {
 		return fmt.Errorf("create new assignment: %w", err)
 	}

@@ -356,7 +356,12 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 
 		// 自动生成编号
 		v1.GET("/settings/next-tag", func(c *gin.Context) {
-			tag, err := settingsRepo.NextAssetTag(c.Request.Context())
+			orgID, _ := c.Get("org_id")
+			oid, _ := orgID.(string)
+			if oid == "" {
+				oid = "00000000-0000-4000-a000-000000000001"
+			}
+			tag, err := settingsRepo.NextAssetTag(c.Request.Context(), oid)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -384,13 +389,26 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 
 	// 登录 (无需认证)
 	engine.POST("/api/v1/auth/login", func(c *gin.Context) {
+		var input struct {
+			Username string `json:"username" binding:"required"`
+			Password string `json:"password" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})
+			return
+		}
+
+		// 简单验证: 开发环境接受 admin/admin
+		if input.Username != "admin" || input.Password != "admin" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			return
+		}
+
 		orgUUID := "00000000-0000-4000-a000-000000000001"
 		userUUID := "00000000-0000-4000-a000-000000000010"
 		token, _ := km.IssueAccessToken(c, userUUID, "super_admin", orgUUID)
-		refreshToken, _ := km.IssueAccessToken(c, userUUID, "super_admin", orgUUID)
 		c.JSON(http.StatusOK, gin.H{
-			"access_token":  token,
-			"refresh_token": refreshToken,
+			"access_token": token,
 			"user": gin.H{
 				"id":       userUUID,
 				"username": "admin",

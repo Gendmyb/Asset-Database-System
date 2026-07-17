@@ -59,7 +59,7 @@ func (r *SettingsRepo) GetAll(ctx context.Context) (map[string]string, error) {
 }
 
 // NextAssetTag 生成下一个资产编号 (前缀 + 自增序号)
-func (r *SettingsRepo) NextAssetTag(ctx context.Context) (string, error) {
+func (r *SettingsRepo) NextAssetTag(ctx context.Context, orgID string) (string, error) {
 	prefix, err := r.Get(ctx, "asset_tag_prefix")
 	if err != nil || prefix == "" {
 		prefix = "AST-"
@@ -68,7 +68,7 @@ func (r *SettingsRepo) NextAssetTag(ctx context.Context) (string, error) {
 	// 统计当前 org 下资产数 +1 作为序号
 	var count int64
 	err = r.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM assets.assets WHERE deleted_at IS NULL`,
+		`SELECT COUNT(*) FROM assets.assets WHERE org_id = $1 AND deleted_at IS NULL`, orgID,
 	).Scan(&count)
 	if err != nil {
 		count = 0

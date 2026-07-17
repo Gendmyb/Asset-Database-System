@@ -91,6 +91,12 @@ func Auth(verifier ClaimsVerifier) gin.HandlerFunc {
 // OrgScope org_id 自动注入 (防 IDOR)
 func OrgScope() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// 从 JWT claims 中提取 org_id (由 Auth 中间件设置)
+		orgID, exists := c.Get("org_id")
+		if !exists || orgID == "" {
+			// 默认 org (开发环境)
+			c.Set("org_id", "00000000-0000-4000-a000-000000000001")
+		}
 		c.Next()
 	}
 }

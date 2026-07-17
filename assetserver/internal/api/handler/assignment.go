@@ -75,7 +75,10 @@ func (h *AssignmentHandler) Transfer(c *gin.Context) {
 		return
 	}
 
-	if err := h.repo.Transfer(c.Request.Context(), assetID, input.ToUserID); err != nil {
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(string)
+
+	if err := h.repo.Transfer(c.Request.Context(), assetID, input.ToUserID, uid); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}

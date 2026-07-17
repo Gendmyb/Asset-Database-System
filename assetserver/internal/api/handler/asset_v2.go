@@ -120,7 +120,12 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 
 	// 自动生成编号
 	if input.AssetTag == "" && h.settingsRepo != nil {
-		tag, _ := h.settingsRepo.NextAssetTag(c.Request.Context())
+		orgID, _ := c.Get("org_id")
+		oid, _ := orgID.(string)
+		if oid == "" {
+			oid = "00000000-0000-4000-a000-000000000001"
+		}
+		tag, _ := h.settingsRepo.NextAssetTag(c.Request.Context(), oid)
 		input.AssetTag = tag
 	}
 
