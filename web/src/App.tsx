@@ -4,6 +4,7 @@ import RequireAuth from './components/RequireAuth'
 import Login from './pages/Login'
 import Assets from './pages/Assets'
 import Dashboard from './pages/Dashboard'
+import Agents from './pages/Agents'
 
 export default function App() {
   return (
@@ -20,7 +21,7 @@ export default function App() {
         <Route path="/assets" element={<Assets />} />
         <Route path="/assets/:id" element={<Assets />} />
         <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/agents" element={<div className="p-8">Agents (Phase 7)</div>} />
+        <Route path="/agents" element={<Agents />} />
         <Route path="/admin" element={<div className="p-8">Admin (super_admin only)</div>} />
       </Route>
     </Routes>

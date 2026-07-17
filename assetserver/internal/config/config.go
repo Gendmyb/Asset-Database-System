@@ -114,9 +114,13 @@ func Load() (*Config, error) {
 }
 
 func (d *DatabaseConfig) DSN() string {
+	sslMode := os.Getenv("DB_SSLMODE")
+	if sslMode == "" {
+		sslMode = "require"
+	}
 	return "postgres://" + d.User + ":" + d.Password +
 		"@" + d.Host + ":" + d.Port + "/" + d.Name +
-		"?sslmode=require&search_path=" + d.Schema
+		"?sslmode=" + sslMode + "&search_path=" + d.Schema
 }
 
 func getEnv(key, fallback string) string {

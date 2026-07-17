@@ -16,6 +16,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// CustomClaims 自定义 JWT Claims (含 org_id 和 role)
+type CustomClaims struct {
+	jwt.RegisteredClaims
+	OrgID string `json:"org_id"`
+	Role  string `json:"role"`
+}
+
 // KeyManager — Vault/KMS 密钥管理
 // 生产对接 Vault Transit Engine; 开发使用本地 Ed25519
 type KeyManager struct {
@@ -77,7 +84,8 @@ func (km *KeyManager) HexEncodePublicKey() string {
 func (km *KeyManager) VerifyJWT(tokenString string) (*middleware.Claims, error) {
 	pubKey := km.GetPublicKey()
 
-	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{},
+	claims := &CustomClaims{}
+	token, err := jwt.ParseWithClaims(tokenString, claims,
 		func(t *jwt.Token) (interface{}, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodEd25519); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
@@ -95,18 +103,27 @@ func (km *KeyManager) VerifyJWT(tokenString string) (*middleware.Claims, error) 
 		return nil, fmt.Errorf("jwt verification: %w", err)
 	}
 
-	claims, ok := token.Claims.(*jwt.RegisteredClaims)
-	if !ok || !token.Valid {
-		return nil, fmt.Errorf("invalid token claims")
+	if !token.Valid {
+		return nil, fmt.Errorf("invalid token")
 	}
+
+	orgID := claims.OrgID
+	if orgID == "" {
+		orgID = "00000000-0000-4000-a000-000000000001" // fallback
+	}
+	role := claims.Role
+	if role == "" {
+		role = "viewer"
+	}
+
 	return &middleware.Claims{
 		UserID: claims.Subject,
-		OrgID:  "org-001", // 简化: 生产从 claims 提取
-		Role:   "admin",
+		OrgID:  orgID,
+		Role:   role,
 	}, nil
 }
 
-// IssueAccessToken 签发 access token
+// IssueAccessToken 签发 access token (含 org_id + role)
 func (km *KeyManager) IssueAccessToken(ctx context.Context, userID, role, orgID string) (string, error) {
 	privKey, err := km.GetPrivateKey()
 	if err != nil {
@@ -114,13 +131,17 @@ func (km *KeyManager) IssueAccessToken(ctx context.Context, userID, role, orgID 
 	}
 
 	now := time.Now()
-	claims := jwt.RegisteredClaims{
-		Issuer:    "asset-db-api",
-		Subject:   userID,
-		Audience:  jwt.ClaimStrings{"asset-db"},
-		ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
-		IssuedAt:  jwt.NewNumericDate(now),
-		ID:        uuid.New().String(),
+	claims := CustomClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "asset-db-api",
+			Subject:   userID,
+			Audience:  jwt.ClaimStrings{"asset-db"},
+			ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ID:        uuid.New().String(),
+		},
+		OrgID: orgID,
+		Role:  role,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)

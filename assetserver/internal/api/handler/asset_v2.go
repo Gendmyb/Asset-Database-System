@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/domain"
@@ -15,11 +16,12 @@ import (
 
 // AssetV2Handler Phase 2 资产处理器 (集成真实 Repository)
 type AssetV2Handler struct {
-	repo *repository.AssetRepo
+	repo         *repository.AssetRepo
+	settingsRepo *repository.SettingsRepo
 }
 
-func NewAssetV2Handler(repo *repository.AssetRepo) *AssetV2Handler {
-	return &AssetV2Handler{repo: repo}
+func NewAssetV2Handler(repo *repository.AssetRepo, settingsRepo *repository.SettingsRepo) *AssetV2Handler {
+	return &AssetV2Handler{repo: repo, settingsRepo: settingsRepo}
 }
 
 // AssetResponse 统一响应
@@ -53,17 +55,23 @@ func rowToResponse(r *repository.AssetRow) AssetResponse {
 
 // ListAssets GET /api/v1/assets
 func (h *AssetV2Handler) ListAssets(c *gin.Context) {
-	orgID := c.GetString("org_id")
-	search := c.Query("search")
-	typeID := c.Query("type_id")
-	status := c.Query("status")
-	cursor := c.Query("cursor")
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	if limit > 200 {
 		limit = 200
 	}
 
-	rows, nextCursor, hasMore, err := h.repo.List(c.Request.Context(), orgID, search, typeID, status, cursor, limit)
+	f := repository.AssetFilter{
+		OrgID:        c.GetString("org_id"),
+		Search:       c.Query("search"),
+		TypeID:       c.Query("type_id"),
+		Status:       c.Query("status"),
+		Lifecycle:    c.Query("lifecycle"),
+		Manufacturer: c.Query("manufacturer"),
+		Cursor:       c.Query("cursor"),
+		Limit:        limit,
+	}
+
+	rows, nextCursor, hasMore, err := h.repo.List(c.Request.Context(), f)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -96,7 +104,7 @@ func (h *AssetV2Handler) GetAsset(c *gin.Context) {
 // CreateAsset POST /api/v1/assets
 func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 	var input struct {
-		AssetTag       string          `json:"asset_tag" binding:"required"`
+		AssetTag       string          `json:"asset_tag"`
 		Name           string          `json:"name" binding:"required"`
 		TypeID         string          `json:"type_id" binding:"required"`
 		SerialNumber   *string         `json:"serial_number"`
@@ -108,6 +116,12 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// 自动生成编号
+	if input.AssetTag == "" && h.settingsRepo != nil {
+		tag, _ := h.settingsRepo.NextAssetTag(c.Request.Context())
+		input.AssetTag = tag
 	}
 
 	now := time.Now()
@@ -160,7 +174,7 @@ func (h *AssetV2Handler) UpdateAsset(c *gin.Context) {
 
 	row, err := h.repo.UpdateWithRetry(c.Request.Context(), c.Param("id"), updates, version)
 	if err != nil {
-		if err.Error() == "version conflict" {
+		if strings.Contains(err.Error(), "version conflict") {
 			c.JSON(http.StatusConflict, gin.H{"error": "version conflict"})
 			return
 		}

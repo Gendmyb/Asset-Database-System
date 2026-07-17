@@ -16,9 +16,9 @@ export default function Dashboard() {
     <div style={{ padding:32, maxWidth:1200 }}>
       <div style={{ marginBottom:32 }}>
         <h1 style={{ fontSize:20, fontWeight:600, color:'var(--text-primary)', letterSpacing:'-0.24px', marginBottom:4 }}>
-          Dashboard
+          仪表盘
         </h1>
-        <p style={{ fontSize:13, color:'var(--text-tertiary)' }}>IT asset overview</p>
+        <p style={{ fontSize:13, color:'var(--text-tertiary)' }}>IT 资产概览</p>
       </div>
 
       {loading ? (
@@ -29,15 +29,15 @@ export default function Dashboard() {
         <>
           {/* KPI Cards */}
           <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:16, marginBottom:32 }}>
-            <KpiCard label="Total Assets" value={String(s?.total_assets||0)} color="var(--brand)" />
-            <KpiCard label="Online Agents" value="0" color="var(--success)" />
-            <KpiCard label="Pending" value="0" color="var(--warning)" />
-            <KpiCard label="Available %" value="—" color="#7170ff" />
+            <KpiCard label="资产总数" value={String(s?.total_assets||0)} color="var(--brand)" />
+            <KpiCard label="在线代理" value="0" color="var(--success)" />
+            <KpiCard label="待处理" value="0" color="var(--warning)" />
+            <KpiCard label="可用率" value="—" color="#7170ff" />
           </div>
 
           {/* Charts */}
           <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
-            <Panel title="Status Distribution">
+            <Panel title="状态分布">
               {s?.by_status ? Object.entries(s.by_status as Record<string,number>).map(([k,v]) => {
                 const total = Object.values(s.by_status as Record<string,number>).reduce((a,b)=>a+b,0)||1
                 const pct = Math.round(v/total*100)
@@ -55,7 +55,7 @@ export default function Dashboard() {
               }) : <EmptyState />}
             </Panel>
 
-            <Panel title="Lifecycle Distribution">
+            <Panel title="生命周期分布">
               {s?.by_lifecycle ? (
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
                   {Object.entries(s.by_lifecycle as Record<string,number>).map(([k,v]) => (
@@ -100,11 +100,11 @@ function Panel({ title, children }: { title:string; children:React.ReactNode }) 
 }
 
 function EmptyState() {
-  return <div style={{ textAlign:'center', padding:40, color:'var(--text-quaternary)', fontSize:13 }}>No data available</div>
+  return <div style={{ textAlign:'center', padding:40, color:'var(--text-quaternary)', fontSize:13 }}>暂无数据</div>
 }
 
 function statusLabel(s:string) {
-  const m: Record<string,string> = { available:'Available', assigned:'Assigned', maintenance:'Maintenance' }
+  const m: Record<string,string> = { available:'可用', assigned:'已领用', maintenance:'维护中' }
   return m[s]||s
 }
 function statusColor(s:string) {
@@ -112,6 +112,6 @@ function statusColor(s:string) {
   return m[s]||'var(--text-quaternary)'
 }
 function lifecycleLabel(s:string) {
-  const m: Record<string,string> = { procurement:'Procurement', deployment:'Deployment', utilization:'In Use', maintenance:'Maintenance', retirement:'Retired' }
+  const m: Record<string,string> = { procurement:'采购中', deployment:'部署中', utilization:'使用中', maintenance:'维护中', retirement:'已退役' }
   return m[s]||s
 }

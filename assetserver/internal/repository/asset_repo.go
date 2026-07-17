@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,33 +42,69 @@ func NewAssetRepo(pool *pgxpool.Pool) *AssetRepo {
 	return &AssetRepo{pool: pool}
 }
 
-// List 游标分页查询
-func (r *AssetRepo) List(ctx context.Context, orgID, search, typeID, status, cursor string, limit int) ([]AssetRow, string, bool, error) {
+// AssetFilter 查询过滤条件
+type AssetFilter struct {
+	OrgID      string
+	Search     string // 全文搜索 (tsvector) 或 ILIKE fallback
+	TypeID     string
+	Status     string
+	Lifecycle  string
+	Manufacturer string
+	Cursor     string
+	Limit      int
+}
+
+// List 游标分页查询 (支持全文搜索 + 多条件过滤)
+func (r *AssetRepo) List(ctx context.Context, f AssetFilter) ([]AssetRow, string, bool, error) {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+
 	query := `SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
 		lifecycle_state, status, properties, version, deleted_at, created_at, updated_at
 		FROM assets.assets WHERE deleted_at IS NULL AND org_id = $1`
-	args := []interface{}{orgID}
+	args := []interface{}{f.OrgID}
 	argIdx := 2
 
-	if search != "" {
-		query += fmt.Sprintf(" AND (name ILIKE $%d OR asset_tag ILIKE $%d)", argIdx, argIdx)
-		args = append(args, "%"+search+"%")
-		argIdx++
+	// 全文搜索优先，回退到 ILIKE
+	if f.Search != "" {
+		// 检查是否是中文搜索
+		if containsCJK(f.Search) {
+			query += fmt.Sprintf(" AND (name ILIKE $%d OR asset_tag ILIKE $%d OR COALESCE(manufacturer,'') ILIKE $%d OR COALESCE(model,'') ILIKE $%d OR COALESCE(serial_number,'') ILIKE $%d)", argIdx, argIdx, argIdx, argIdx, argIdx)
+			args = append(args, "%"+f.Search+"%")
+			argIdx++
+		} else {
+			// 英文使用 PostgreSQL 全文搜索
+			query += fmt.Sprintf(" AND to_tsvector('english', name || ' ' || COALESCE(manufacturer,'') || ' ' || COALESCE(model,'') || ' ' || COALESCE(serial_number,'') || ' ' || asset_tag) @@ plainto_tsquery('english', $%d)", argIdx)
+			args = append(args, f.Search)
+			argIdx++
+		}
 	}
-	if typeID != "" {
+
+	if f.TypeID != "" {
 		query += fmt.Sprintf(" AND type_id = $%d", argIdx)
-		args = append(args, typeID)
+		args = append(args, f.TypeID)
 		argIdx++
 	}
-	if status != "" {
+	if f.Status != "" {
 		query += fmt.Sprintf(" AND status = $%d", argIdx)
-		args = append(args, status)
+		args = append(args, f.Status)
+		argIdx++
+	}
+	if f.Lifecycle != "" {
+		query += fmt.Sprintf(" AND lifecycle_state = $%d", argIdx)
+		args = append(args, f.Lifecycle)
+		argIdx++
+	}
+	if f.Manufacturer != "" {
+		query += fmt.Sprintf(" AND manufacturer ILIKE $%d", argIdx)
+		args = append(args, "%"+f.Manufacturer+"%")
 		argIdx++
 	}
 
 	// 游标解码
-	if cursor != "" {
-		decoded, err := decodeCursor(cursor)
+	if f.Cursor != "" {
+		decoded, err := decodeCursor(f.Cursor)
 		if err == nil {
 			query += fmt.Sprintf(" AND (updated_at, id) < ($%d, $%d)", argIdx, argIdx+1)
 			args = append(args, decoded.UpdatedAt, decoded.ID)
@@ -76,7 +113,7 @@ func (r *AssetRepo) List(ctx context.Context, orgID, search, typeID, status, cur
 	}
 
 	query += fmt.Sprintf(" ORDER BY updated_at DESC, id DESC LIMIT $%d", argIdx)
-	args = append(args, limit+1)
+	args = append(args, f.Limit+1)
 
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -96,9 +133,9 @@ func (r *AssetRepo) List(ctx context.Context, orgID, search, typeID, status, cur
 		assets = append(assets, a)
 	}
 
-	hasMore := len(assets) > limit
+	hasMore := len(assets) > f.Limit
 	if hasMore {
-		assets = assets[:limit]
+		assets = assets[:f.Limit]
 	}
 
 	var nextCursor string
@@ -108,6 +145,20 @@ func (r *AssetRepo) List(ctx context.Context, orgID, search, typeID, status, cur
 	}
 
 	return assets, nextCursor, hasMore, nil
+}
+
+// containsCJK 检测字符串是否包含中日韩字符
+func containsCJK(s string) bool {
+	for _, r := range s {
+		if (r >= 0x4E00 && r <= 0x9FFF) || // CJK Unified
+			(r >= 0x3400 && r <= 0x4DBF) || // CJK Extension A
+			(r >= 0x3040 && r <= 0x309F) || // Hiragana
+			(r >= 0x30A0 && r <= 0x30FF) || // Katakana
+			(r >= 0xAC00 && r <= 0xD7AF) { // Hangul
+			return true
+		}
+	}
+	return false
 }
 
 // GetByID 获取单个资产
@@ -144,7 +195,6 @@ func (r *AssetRepo) Create(ctx context.Context, a *AssetRow) error {
 }
 
 // UpdateWithRetry 乐观锁更新 (最多 3 次重试)
-// 对应架构文档 §8.2 乐观锁
 func (r *AssetRepo) UpdateWithRetry(ctx context.Context, id string, updates map[string]interface{}, expectedVersion int) (*AssetRow, error) {
 	const maxRetries = 3
 
@@ -177,7 +227,6 @@ func (r *AssetRepo) UpdateWithRetry(ctx context.Context, id string, updates map[
 			if attempt >= maxRetries {
 				return nil, fmt.Errorf("max retries exceeded: version conflict")
 			}
-			// 重新读取当前版本并重试
 			expectedVersion = current.Version
 			continue
 		}
@@ -203,9 +252,7 @@ func (r *AssetRepo) SoftDelete(ctx context.Context, id string) error {
 }
 
 // LockForUpdate 悲观锁 — SELECT ... FOR UPDATE (5s 超时)
-// 对应架构文档 §8.3 悲观锁
 func (r *AssetRepo) LockForUpdate(ctx context.Context, id string) (*AssetRow, error) {
-	// 设置锁超时
 	if _, err := r.pool.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
 		return nil, fmt.Errorf("set lock_timeout: %w", err)
 	}
@@ -226,12 +273,9 @@ func (r *AssetRepo) LockForUpdate(ctx context.Context, id string) (*AssetRow, er
 }
 
 // LockAssetsSorted 按 UUID 字典序锁定多个资产 (死锁预防)
-// 对应架构文档 §8.3 全局锁排序规范
 func (r *AssetRepo) LockAssetsSorted(ctx context.Context, ids []string) ([]*AssetRow, error) {
-	// 按 UUID 字典序排序
 	sorted := make([]string, len(ids))
 	copy(sorted, ids)
-	// 简化: 按字符串排序 (UUID 字典序)
 	for i := 0; i < len(sorted); i++ {
 		for j := i + 1; j < len(sorted); j++ {
 			if sorted[i] > sorted[j] {
@@ -277,3 +321,6 @@ func decodeCursor(c string) (*cursorData, error) {
 	}
 	return &d, nil
 }
+
+// 确保 strings 被使用 (containsCJK 用到 range)
+var _ = strings.Contains

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"os/signal"
@@ -11,6 +12,8 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/config"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/crypto"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
@@ -29,11 +32,20 @@ func main() {
 	log.Printf("Ed25519 Key: kid=%s", km.GetCurrentKeyID())
 
 	demoMode := os.Getenv("DEMO") == "true"
-	if demoMode {
+
+	var pool *pgxpool.Pool
+	if !demoMode {
+		pool, err = repository.NewPool(context.Background(), &cfg.Database)
+		if err != nil {
+			log.Fatalf("Database connection error: %v", err)
+		}
+		defer pool.Close()
+		log.Println("PostgreSQL connected successfully")
+	} else {
 		log.Println("⚠️  DEMO mode: in-memory stores, no PostgreSQL required")
 	}
 
-	server := api.NewServer(cfg, km, nil, demoMode)
+	server := api.NewServer(cfg, km, pool, demoMode)
 
 	go func() {
 		sig := make(chan os.Signal, 1)
