@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // AssetRow 数据库行
@@ -33,29 +32,27 @@ type AssetRow struct {
 	UpdatedAt      time.Time
 }
 
-// AssetRepo 资产仓库
-type AssetRepo struct {
-	pool *pgxpool.Pool
-}
+// AssetRepo 资产仓库 (无状态 — DBTX 由调用方传入)
+type AssetRepo struct{}
 
-func NewAssetRepo(pool *pgxpool.Pool) *AssetRepo {
-	return &AssetRepo{pool: pool}
+func NewAssetRepo() *AssetRepo {
+	return &AssetRepo{}
 }
 
 // AssetFilter 查询过滤条件
 type AssetFilter struct {
-	OrgID      string
-	Search     string // 全文搜索 (tsvector) 或 ILIKE fallback
-	TypeID     string
-	Status     string
-	Lifecycle  string
+	OrgID        string
+	Search       string // 全文搜索 (tsvector) 或 ILIKE fallback
+	TypeID       string
+	Status       string
+	Lifecycle    string
 	Manufacturer string
-	Cursor     string
-	Limit      int
+	Cursor       string
+	Limit        int
 }
 
 // List 游标分页查询 (支持全文搜索 + 多条件过滤)
-func (r *AssetRepo) List(ctx context.Context, f AssetFilter) ([]AssetRow, string, bool, error) {
+func (r *AssetRepo) List(ctx context.Context, q DBTX, f AssetFilter) ([]AssetRow, string, bool, error) {
 	if f.Limit <= 0 || f.Limit > 200 {
 		f.Limit = 50
 	}
@@ -115,7 +112,7 @@ func (r *AssetRepo) List(ctx context.Context, f AssetFilter) ([]AssetRow, string
 	query += fmt.Sprintf(" ORDER BY updated_at DESC, id DESC LIMIT $%d", argIdx)
 	args = append(args, f.Limit+1)
 
-	rows, err := r.pool.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("list assets: %w", err)
 	}
@@ -161,13 +158,13 @@ func containsCJK(s string) bool {
 	return false
 }
 
-// GetByID 获取单个资产
-func (r *AssetRepo) GetByID(ctx context.Context, id string) (*AssetRow, error) {
+// GetByID 获取单个资产 (含 org_id 过滤防止 IDOR)
+func (r *AssetRepo) GetByID(ctx context.Context, q DBTX, id string, orgID string) (*AssetRow, error) {
 	var a AssetRow
-	err := r.pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
 		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at
-		 FROM assets.assets WHERE id = $1 AND deleted_at IS NULL`, id,
+		 FROM assets.assets WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`, id, orgID,
 	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 		&a.SerialNumber, &a.Manufacturer, &a.Model,
 		&a.LifecycleState, &a.Status, &a.Properties,
@@ -182,8 +179,8 @@ func (r *AssetRepo) GetByID(ctx context.Context, id string) (*AssetRow, error) {
 }
 
 // Create 创建资产
-func (r *AssetRepo) Create(ctx context.Context, a *AssetRow) error {
-	_, err := r.pool.Exec(ctx,
+func (r *AssetRepo) Create(ctx context.Context, q DBTX, a *AssetRow) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO assets.assets (id, asset_tag, name, type_id, org_id, serial_number,
 		 manufacturer, model, lifecycle_state, status, properties, version, created_at, updated_at)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
@@ -194,12 +191,12 @@ func (r *AssetRepo) Create(ctx context.Context, a *AssetRow) error {
 	return err
 }
 
-// UpdateWithRetry 乐观锁更新 (最多 3 次重试)
-func (r *AssetRepo) UpdateWithRetry(ctx context.Context, id string, updates map[string]interface{}, expectedVersion int) (*AssetRow, error) {
+// UpdateWithRetry 乐观锁更新 (最多 3 次重试, 含 org_id 过滤防止 IDOR)
+func (r *AssetRepo) UpdateWithRetry(ctx context.Context, q DBTX, id string, orgID string, updates map[string]interface{}, expectedVersion int) (*AssetRow, error) {
 	const maxRetries = 3
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		current, err := r.GetByID(ctx, id)
+		current, err := r.GetByID(ctx, q, id, orgID)
 		if err != nil {
 			return nil, err
 		}
@@ -208,16 +205,16 @@ func (r *AssetRepo) UpdateWithRetry(ctx context.Context, id string, updates map[
 		}
 
 		now := time.Now()
-		tag, err := r.pool.Exec(ctx,
+		tag, err := q.Exec(ctx,
 			`UPDATE assets.assets SET name=COALESCE($2,name), serial_number=COALESCE($3,serial_number),
 			 manufacturer=COALESCE($4,manufacturer), model=COALESCE($5,model),
 			 lifecycle_state=COALESCE($6,lifecycle_state), status=COALESCE($7,status),
 			 properties=COALESCE($8,properties), version=version+1, updated_at=$9
-			 WHERE id=$1 AND version=$10 AND deleted_at IS NULL`,
+			 WHERE id=$1 AND org_id=$11 AND version=$10 AND deleted_at IS NULL`,
 			id,
 			updates["name"], updates["serial_number"], updates["manufacturer"],
 			updates["model"], updates["lifecycle_state"], updates["status"],
-			updates["properties"], now, expectedVersion,
+			updates["properties"], now, expectedVersion, orgID,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("update asset: %w", err)
@@ -230,17 +227,17 @@ func (r *AssetRepo) UpdateWithRetry(ctx context.Context, id string, updates map[
 			expectedVersion = current.Version
 			continue
 		}
-		return r.GetByID(ctx, id)
+		return r.GetByID(ctx, q, id, orgID)
 	}
 	return nil, fmt.Errorf("max retries exceeded")
 }
 
-// SoftDelete 软删除
-func (r *AssetRepo) SoftDelete(ctx context.Context, id string) error {
+// SoftDelete 软删除 (含 org_id 过滤防止 IDOR)
+func (r *AssetRepo) SoftDelete(ctx context.Context, q DBTX, id string, orgID string) error {
 	now := time.Now()
-	tag, err := r.pool.Exec(ctx,
-		`UPDATE assets.assets SET deleted_at=$1, updated_at=$1 WHERE id=$2 AND deleted_at IS NULL`,
-		now, id,
+	tag, err := q.Exec(ctx,
+		`UPDATE assets.assets SET deleted_at=$1, updated_at=$1 WHERE id=$2 AND org_id=$3 AND deleted_at IS NULL`,
+		now, id, orgID,
 	)
 	if err != nil {
 		return err
@@ -251,17 +248,17 @@ func (r *AssetRepo) SoftDelete(ctx context.Context, id string) error {
 	return nil
 }
 
-// LockForUpdate 悲观锁 — SELECT ... FOR UPDATE (5s 超时)
-func (r *AssetRepo) LockForUpdate(ctx context.Context, id string) (*AssetRow, error) {
-	if _, err := r.pool.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+// LockForUpdate 悲观锁 — SELECT ... FOR UPDATE (5s 超时, 含 org_id 过滤防止 IDOR)
+func (r *AssetRepo) LockForUpdate(ctx context.Context, q DBTX, id string, orgID string) (*AssetRow, error) {
+	if _, err := q.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
 		return nil, fmt.Errorf("set lock_timeout: %w", err)
 	}
 
 	var a AssetRow
-	err := r.pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
 		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at
-		 FROM assets.assets WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id,
+		 FROM assets.assets WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`, id, orgID,
 	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 		&a.SerialNumber, &a.Manufacturer, &a.Model,
 		&a.LifecycleState, &a.Status, &a.Properties,
@@ -272,8 +269,8 @@ func (r *AssetRepo) LockForUpdate(ctx context.Context, id string) (*AssetRow, er
 	return &a, nil
 }
 
-// LockAssetsSorted 按 UUID 字典序锁定多个资产 (死锁预防)
-func (r *AssetRepo) LockAssetsSorted(ctx context.Context, ids []string) ([]*AssetRow, error) {
+// LockAssetsSorted 按 UUID 字典序锁定多个资产 (死锁预防, 含 org_id 过滤)
+func (r *AssetRepo) LockAssetsSorted(ctx context.Context, q DBTX, ids []string, orgID string) ([]*AssetRow, error) {
 	sorted := make([]string, len(ids))
 	copy(sorted, ids)
 	for i := 0; i < len(sorted); i++ {
@@ -284,13 +281,13 @@ func (r *AssetRepo) LockAssetsSorted(ctx context.Context, ids []string) ([]*Asse
 		}
 	}
 
-	if _, err := r.pool.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
+	if _, err := q.Exec(ctx, "SET LOCAL lock_timeout = '5s'"); err != nil {
 		return nil, err
 	}
 
 	var assets []*AssetRow
 	for _, id := range sorted {
-		a, err := r.LockForUpdate(ctx, id)
+		a, err := r.LockForUpdate(ctx, q, id, orgID)
 		if err != nil {
 			return nil, err
 		}

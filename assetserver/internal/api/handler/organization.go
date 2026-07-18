@@ -1,21 +1,22 @@
-// Package handler — Organization CRUD (Phase 5, ltree 物化路径)
+// Package handler — Organization CRUD (PG ltree 物化路径)
+// Phase B: 生产模式走 PG repo
 package handler
 
 import (
 	"net/http"
 	"time"
 
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
-// OrgNode 组织节点
+// OrgNode 组织节点 (API 响应)
 type OrgNode struct {
 	ID        string     `json:"id"`
 	Name      string     `json:"name"`
 	ParentID  *string    `json:"parent_id"`
 	Depth     int        `json:"depth"`
-	Path      string     `json:"path"` // ltree 物化路径
+	Path      string     `json:"path"`
 	Children  []*OrgNode `json:"children,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
@@ -23,16 +24,24 @@ type OrgNode struct {
 
 // OrgHandler 组织管理
 type OrgHandler struct {
-	store *OrgStore
+	repo *repository.OrgRepo
+	pool repository.DBTX
 }
 
-func NewOrgHandler() *OrgHandler {
-	return &OrgHandler{store: NewOrgStore()}
+func NewOrgHandler(repo *repository.OrgRepo, pool repository.DBTX) *OrgHandler {
+	return &OrgHandler{repo: repo, pool: pool}
 }
 
-// List GET /api/v1/organizations
+// List GET /api/v1/organizations (树结构)
 func (h *OrgHandler) List(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"data": h.store.Tree()})
+	rows, err := h.repo.ListOrgs(c.Request.Context(), h.pool)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	tree := buildOrgTree(rows)
+	c.JSON(http.StatusOK, gin.H{"data": tree})
 }
 
 // Create POST /api/v1/organizations
@@ -46,126 +55,84 @@ func (h *OrgHandler) Create(c *gin.Context) {
 		return
 	}
 
-	org, err := h.store.Add(input.Name, input.ParentID)
+	org, err := h.repo.CreateOrg(c.Request.Context(), h.pool, repository.CreateOrgInput{
+		Name:     input.Name,
+		ParentID: input.ParentID,
+	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"data": org})
+
+	c.JSON(http.StatusCreated, gin.H{"data": rowToOrgNode(org)})
 }
 
 // Get GET /api/v1/organizations/:id
 func (h *OrgHandler) Get(c *gin.Context) {
-	org := h.store.Find(c.Param("id"))
-	if org == nil {
+	org, err := h.repo.GetOrg(c.Request.Context(), h.pool, c.Param("id"))
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": org})
+	c.JSON(http.StatusOK, gin.H{"data": rowToOrgNode(org)})
 }
 
 // Subtree GET /api/v1/organizations/:id/subtree (ltree 子组织查询)
 func (h *OrgHandler) Subtree(c *gin.Context) {
-	org := h.store.Find(c.Param("id"))
-	if org == nil {
+	org, err := h.repo.GetOrg(c.Request.Context(), h.pool, c.Param("id"))
+	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	subtree := h.store.Subtree(org.Path)
-	c.JSON(http.StatusOK, gin.H{"data": subtree})
-}
 
-// ===================================================================
-// OrgStore — ltree 物化路径组织树 (内存实现)
-// 生产环境: PostgreSQL ltree 扩展 + GIST 索引
-// 对应架构文档 §7.2 多租户隔离
-// ===================================================================
-
-type OrgStore struct {
-	items map[string]*OrgNode
-}
-
-func NewOrgStore() *OrgStore {
-	s := &OrgStore{items: make(map[string]*OrgNode)}
-	// 种子: 根组织
-	root := &OrgNode{
-		ID: uuid.New().String(), Name: "Demo Corp", Depth: 0,
-		Path: "root", CreatedAt: time.Now(), UpdatedAt: time.Now(),
-	}
-	s.items[root.ID] = root
-	return s
-}
-
-func (s *OrgStore) Add(name string, parentID *string) (*OrgNode, error) {
-	var parentPath string
-	var depth int
-	if parentID != nil {
-		parent, ok := s.items[*parentID]
-		if !ok {
-			return nil, ErrNotFound
-		}
-		if parent.Depth >= 20 {
-			return nil, ErrMaxDepth
-		}
-		parentPath = parent.Path
-		depth = parent.Depth + 1
-	} else {
-		parentPath = "root"
-		depth = 1
+	rows, err := h.repo.Subtree(c.Request.Context(), h.pool, org.Path)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
 	}
 
-	org := &OrgNode{
-		ID:        uuid.New().String(),
-		Name:      name,
-		ParentID:  parentID,
-		Depth:     depth,
-		Path:      parentPath + "." + name,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+	nodes := make([]*OrgNode, len(rows))
+	for i, r := range rows {
+		n := rowToOrgNode(&r)
+		nodes[i] = n
 	}
-	s.items[org.ID] = org
-	return org, nil
+	c.JSON(http.StatusOK, gin.H{"data": nodes})
 }
 
-func (s *OrgStore) Find(id string) *OrgNode {
-	return s.items[id]
+func rowToOrgNode(r *repository.OrgRow) *OrgNode {
+	return &OrgNode{
+		ID:        r.ID,
+		Name:      r.Name,
+		ParentID:  r.ParentID,
+		Depth:     r.Depth,
+		Path:      r.Path,
+		CreatedAt: r.CreatedAt,
+		UpdatedAt: r.UpdatedAt,
+	}
 }
 
-// Tree 返回组织树
-func (s *OrgStore) Tree() []*OrgNode {
+// buildOrgTree 将扁平列表构建为树结构
+func buildOrgTree(rows []repository.OrgRow) []*OrgNode {
+	nodes := make(map[string]*OrgNode)
 	var roots []*OrgNode
 	children := make(map[string][]*OrgNode)
-	for _, org := range s.items {
-		if org.ParentID == nil {
-			roots = append(roots, org)
+
+	for i := range rows {
+		n := rowToOrgNode(&rows[i])
+		nodes[n.ID] = n
+		if n.ParentID != nil {
+			children[*n.ParentID] = append(children[*n.ParentID], n)
 		} else {
-			children[*org.ParentID] = append(children[*org.ParentID], org)
+			roots = append(roots, n)
 		}
 	}
-	for _, org := range s.items {
-		org.Children = children[org.ID]
+	for id, kids := range children {
+		if n, ok := nodes[id]; ok {
+			n.Children = kids
+		}
+	}
+	if roots == nil {
+		roots = []*OrgNode{}
 	}
 	return roots
 }
-
-// Subtree 查询 path 前缀的子孙组织 (对应 ltree: path <@ parent_path)
-func (s *OrgStore) Subtree(path string) []*OrgNode {
-	var result []*OrgNode
-	for _, org := range s.items {
-		if len(org.Path) >= len(path) && org.Path[:len(path)] == path {
-			result = append(result, org)
-		}
-	}
-	if result == nil {
-		result = []*OrgNode{}
-	}
-	return result
-}
-
-var (
-	ErrNotFound  = &orgError{"organization not found"}
-	ErrMaxDepth  = &orgError{"max depth (20) exceeded"}
-)
-
-type orgError struct{ msg string }
-func (e *orgError) Error() string { return e.msg }

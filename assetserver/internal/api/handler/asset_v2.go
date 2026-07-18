@@ -18,10 +18,11 @@ import (
 type AssetV2Handler struct {
 	repo         *repository.AssetRepo
 	settingsRepo *repository.SettingsRepo
+	pool         repository.DBTX
 }
 
-func NewAssetV2Handler(repo *repository.AssetRepo, settingsRepo *repository.SettingsRepo) *AssetV2Handler {
-	return &AssetV2Handler{repo: repo, settingsRepo: settingsRepo}
+func NewAssetV2Handler(repo *repository.AssetRepo, settingsRepo *repository.SettingsRepo, pool repository.DBTX) *AssetV2Handler {
+	return &AssetV2Handler{repo: repo, settingsRepo: settingsRepo, pool: pool}
 }
 
 // AssetResponse 统一响应
@@ -71,7 +72,7 @@ func (h *AssetV2Handler) ListAssets(c *gin.Context) {
 		Limit:        limit,
 	}
 
-	rows, nextCursor, hasMore, err := h.repo.List(c.Request.Context(), f)
+	rows, nextCursor, hasMore, err := h.repo.List(c.Request.Context(), h.pool, f)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -93,7 +94,7 @@ func (h *AssetV2Handler) ListAssets(c *gin.Context) {
 
 // GetAsset GET /api/v1/assets/:id
 func (h *AssetV2Handler) GetAsset(c *gin.Context) {
-	row, err := h.repo.GetByID(c.Request.Context(), c.Param("id"))
+	row, err := h.repo.GetByID(c.Request.Context(), h.pool, c.Param("id"), c.GetString("org_id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -125,7 +126,7 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 		if oid == "" {
 			oid = "00000000-0000-4000-a000-000000000001"
 		}
-		tag, _ := h.settingsRepo.NextAssetTag(c.Request.Context(), oid)
+		tag, _ := h.settingsRepo.NextAssetTag(c.Request.Context(), h.pool, oid)
 		input.AssetTag = tag
 	}
 
@@ -139,7 +140,7 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 		CreatedAt: now, UpdatedAt: now,
 	}
 
-	if err := h.repo.Create(c.Request.Context(), row); err != nil {
+	if err := h.repo.Create(c.Request.Context(), h.pool, row); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -163,7 +164,7 @@ func (h *AssetV2Handler) UpdateAsset(c *gin.Context) {
 
 	// 生命周期状态转换校验
 	if newState, ok := updates["lifecycle_state"].(string); ok && newState != "" {
-		current, err := h.repo.GetByID(c.Request.Context(), c.Param("id"))
+		current, err := h.repo.GetByID(c.Request.Context(), h.pool, c.Param("id"), c.GetString("org_id"))
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 			return
@@ -177,7 +178,7 @@ func (h *AssetV2Handler) UpdateAsset(c *gin.Context) {
 		}
 	}
 
-	row, err := h.repo.UpdateWithRetry(c.Request.Context(), c.Param("id"), updates, version)
+	row, err := h.repo.UpdateWithRetry(c.Request.Context(), h.pool, c.Param("id"), c.GetString("org_id"), updates, version)
 	if err != nil {
 		if strings.Contains(err.Error(), "version conflict") {
 			c.JSON(http.StatusConflict, gin.H{"error": "version conflict"})
@@ -191,7 +192,7 @@ func (h *AssetV2Handler) UpdateAsset(c *gin.Context) {
 
 // DeleteAsset DELETE /api/v1/assets/:id (软删除)
 func (h *AssetV2Handler) DeleteAsset(c *gin.Context) {
-	if err := h.repo.SoftDelete(c.Request.Context(), c.Param("id")); err != nil {
+	if err := h.repo.SoftDelete(c.Request.Context(), h.pool, c.Param("id"), c.GetString("org_id")); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
@@ -209,7 +210,7 @@ func (h *AssetV2Handler) LifecycleTransition(c *gin.Context) {
 	}
 
 	// 悲观锁获取资产
-	row, err := h.repo.LockForUpdate(c.Request.Context(), c.Param("id"))
+	row, err := h.repo.LockForUpdate(c.Request.Context(), h.pool, c.Param("id"), c.GetString("org_id"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -224,7 +225,7 @@ func (h *AssetV2Handler) LifecycleTransition(c *gin.Context) {
 		return
 	}
 
-	updated, err := h.repo.UpdateWithRetry(c.Request.Context(), c.Param("id"),
+	updated, err := h.repo.UpdateWithRetry(c.Request.Context(), h.pool, c.Param("id"), c.GetString("org_id"),
 		map[string]interface{}{"lifecycle_state": input.To}, row.Version)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

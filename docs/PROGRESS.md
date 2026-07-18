@@ -11,8 +11,8 @@
 |---|---|---|---|
 | 0 | 环境准备 + 规划落库 | ✅ | 2026-07-19 |
 | A | 止血：契约修复 + 可构建可部署 + CI | ✅ | 2026-07-19 |
-| B | 数据层地基：goose 迁移/事务/审计/租户隔离 | 🔵 | |
-| C | 真实认证与 RBAC | ⬜ | |
+| B | 数据层地基：goose 迁移/事务/审计/租户隔离 | ✅ | 2026-07-19 |
+| C | 真实认证与 RBAC | 🔵 | |
 | D | 前端基建重构 + 管理页 | ⬜ | |
 | E | 入库增强 + 领用/借用/归还闭环 | ⬜ | |
 | F | 维修/保养工单 + 报废 | ⬜ | |
@@ -45,3 +45,13 @@
 | A | 后端：死代码删除（cache/ingest/agent/collection-agent/nginx/grafana） | ✅ | | 2,729 行死代码删除 | 2026-07-19 |
 | A | 部署：Dockerfile 三阶段（node→go→alpine）+ webfs embed | ✅ | | 仓库根 Dockerfile，context=./ | 2026-07-19 |
 | A | 部署：docker-compose 精简（仅 pg+app）+ .github/ci.yml | ✅ | | 删 redis/grafana，3-job CI | 2026-07-19 |
+| B | Step1: 自研 migration runner（embed+EXCLUSIVE锁+schema_migrations） | ✅ | | 99 行，避免 goose 依赖链 | 2026-07-19 |
+| B | Step2: 003 DROP 9 未用表 + 004 locations 表 | ✅ | | 新建迁移文件 | 2026-07-19 |
+| B | Step3: DBTX 接口 + 全 repo 方法签名改造 | ✅ | | asset/assignment/user/dashboard/settings repo | 2026-07-19 |
+| B | Step4: Service 层（Begin/Commit/Rollback 事务包裹) | ✅ | | asset_service(296行)+assignment_service(147行) | 2026-07-19 |
+| B | Step5: IDOR 修复（全单行操作补 AND org_id=$n） | ✅ | | GetByID/Update/Delete/ForUpdate 等 | 2026-07-19 |
+| B | Step6: 审计 Recorder（链式哈希 SHA256） | ✅ | | 事务内 INSERT audit_log | 2026-07-19 |
+| B | Step7: org_repo + location_repo 落 PG | ✅ | | 替换内存 Store，/locations 路由注册 | 2026-07-19 |
+| B | Step8: Event bus 接线（DefaultBus + log consumer） | ✅ | | service commit 后 Publish | 2026-07-19 |
+| B | Step9: server.go 拆分（routes/routes_demo）+ config 清理 | ✅ | | 800+→360行；删 Redis/Vault 配置 | 2026-07-19 |
+| B | go build + go test + go vet 全部通过 | ✅ | | 0 errors 0 regressions | 2026-07-19 |

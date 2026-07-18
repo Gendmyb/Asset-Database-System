@@ -4,23 +4,19 @@ package repository
 import (
 	"context"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// SettingsRepo 系统设置仓库
-type SettingsRepo struct {
-	pool *pgxpool.Pool
-}
+// SettingsRepo 系统设置仓库 (无状态 — DBTX 由调用方传入)
+type SettingsRepo struct{}
 
-func NewSettingsRepo(pool *pgxpool.Pool) *SettingsRepo {
-	return &SettingsRepo{pool: pool}
+func NewSettingsRepo() *SettingsRepo {
+	return &SettingsRepo{}
 }
 
 // Get 获取设置值
-func (r *SettingsRepo) Get(ctx context.Context, key string) (string, error) {
+func (r *SettingsRepo) Get(ctx context.Context, q DBTX, key string) (string, error) {
 	var value string
-	err := r.pool.QueryRow(ctx,
+	err := q.QueryRow(ctx,
 		`SELECT value FROM assets.system_settings WHERE key = $1`, key,
 	).Scan(&value)
 	if err != nil {
@@ -30,8 +26,8 @@ func (r *SettingsRepo) Get(ctx context.Context, key string) (string, error) {
 }
 
 // Set 更新设置值
-func (r *SettingsRepo) Set(ctx context.Context, key, value string) error {
-	_, err := r.pool.Exec(ctx,
+func (r *SettingsRepo) Set(ctx context.Context, q DBTX, key, value string) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO assets.system_settings (key, value, updated_at)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = $3`,
@@ -40,8 +36,8 @@ func (r *SettingsRepo) Set(ctx context.Context, key, value string) error {
 }
 
 // GetAll 获取所有设置
-func (r *SettingsRepo) GetAll(ctx context.Context) (map[string]string, error) {
-	rows, err := r.pool.Query(ctx, `SELECT key, value FROM assets.system_settings ORDER BY key`)
+func (r *SettingsRepo) GetAll(ctx context.Context, q DBTX) (map[string]string, error) {
+	rows, err := q.Query(ctx, `SELECT key, value FROM assets.system_settings ORDER BY key`)
 	if err != nil {
 		return nil, err
 	}
@@ -59,15 +55,15 @@ func (r *SettingsRepo) GetAll(ctx context.Context) (map[string]string, error) {
 }
 
 // NextAssetTag 生成下一个资产编号 (前缀 + 自增序号)
-func (r *SettingsRepo) NextAssetTag(ctx context.Context, orgID string) (string, error) {
-	prefix, err := r.Get(ctx, "asset_tag_prefix")
+func (r *SettingsRepo) NextAssetTag(ctx context.Context, q DBTX, orgID string) (string, error) {
+	prefix, err := r.Get(ctx, q, "asset_tag_prefix")
 	if err != nil || prefix == "" {
 		prefix = "AST-"
 	}
 
 	// 统计当前 org 下资产数 +1 作为序号
 	var count int64
-	err = r.pool.QueryRow(ctx,
+	err = q.QueryRow(ctx,
 		`SELECT COUNT(*) FROM assets.assets WHERE org_id = $1 AND deleted_at IS NULL`, orgID,
 	).Scan(&count)
 	if err != nil {

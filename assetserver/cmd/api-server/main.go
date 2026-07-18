@@ -12,6 +12,8 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/config"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/crypto"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/db"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/event"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -31,6 +33,21 @@ func main() {
 	}
 	log.Printf("Ed25519 Key: kid=%s", km.GetCurrentKeyID())
 
+	// 事件总线 — 挂日志消费者 (后续 Phase I 挂 webhook consumer)
+	eventTypes := []string{
+		event.EventAssetCreated, event.EventAssetUpdated, event.EventAssetDeleted,
+		event.EventAssetAssigned, event.EventAssetReleased, event.EventAssetTransferred,
+		event.EventLifecycleChanged,
+	}
+	for _, et := range eventTypes {
+		ch, _ := event.DefaultBus.Subscribe(context.Background(), et)
+		go func(evtCh <-chan *event.Event) {
+			for evt := range evtCh {
+				log.Printf("[EVENT] %s asset=%s org=%s user=%s", evt.Type, evt.AssetID, evt.OrgID, evt.UserID)
+			}
+		}(ch)
+	}
+
 	demoMode := os.Getenv("DEMO") == "true"
 
 	var pool *pgxpool.Pool
@@ -41,6 +58,10 @@ func main() {
 		}
 		defer pool.Close()
 		log.Println("PostgreSQL connected successfully")
+
+		if err := db.RunMigrations(context.Background(), pool); err != nil {
+			log.Fatalf("Migration error: %v", err)
+		}
 	} else {
 		log.Println("⚠️  DEMO mode: in-memory stores, no PostgreSQL required")
 	}

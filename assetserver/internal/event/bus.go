@@ -46,9 +46,13 @@ type MemoryBus struct {
 	subscribers map[string][]chan *Event
 }
 
+// NewMemoryBus 返回新内存总线
 func NewMemoryBus() *MemoryBus {
 	return &MemoryBus{subscribers: make(map[string][]chan *Event)}
 }
+
+// DefaultBus 全局默认事件总线 (由 main.go 初始化订阅者)
+var DefaultBus EventBus = NewMemoryBus()
 
 func (b *MemoryBus) Publish(ctx context.Context, event *Event) error {
 	b.mu.RLock()

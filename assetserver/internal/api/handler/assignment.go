@@ -11,10 +11,11 @@ import (
 // AssignmentHandler 领用管理
 type AssignmentHandler struct {
 	repo *repository.AssignmentRepo
+	pool repository.DBTX
 }
 
-func NewAssignmentHandler(repo *repository.AssignmentRepo) *AssignmentHandler {
-	return &AssignmentHandler{repo: repo}
+func NewAssignmentHandler(repo *repository.AssignmentRepo, pool repository.DBTX) *AssignmentHandler {
+	return &AssignmentHandler{repo: repo, pool: pool}
 }
 
 // Assign POST /api/v1/assets/:id/assign
@@ -33,7 +34,7 @@ func (h *AssignmentHandler) Assign(c *gin.Context) {
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
 
-	assignmentID, err := h.repo.Assign(c.Request.Context(), assetID, orgID, input.AssignedTo, userID, input.Notes)
+	assignmentID, err := h.repo.Assign(c.Request.Context(), h.pool, assetID, orgID, input.AssignedTo, userID, input.Notes)
 	if err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
@@ -53,7 +54,7 @@ func (h *AssignmentHandler) Assign(c *gin.Context) {
 func (h *AssignmentHandler) Release(c *gin.Context) {
 	assetID := c.Param("id")
 
-	if err := h.repo.Release(c.Request.Context(), assetID); err != nil {
+	if err := h.repo.Release(c.Request.Context(), h.pool, assetID, c.GetString("org_id")); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
@@ -78,7 +79,7 @@ func (h *AssignmentHandler) Transfer(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	uid, _ := userID.(string)
 
-	if err := h.repo.Transfer(c.Request.Context(), assetID, input.ToUserID, uid); err != nil {
+	if err := h.repo.Transfer(c.Request.Context(), h.pool, assetID, c.GetString("org_id"), input.ToUserID, uid); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}

@@ -1,13 +1,13 @@
 // Package webfs — 嵌入前端构建产物 (SPA dist)
 // 对应架构文档 §13.3 多阶段 Docker 构建 + embed
-package webfs
+package web
 
 import (
 	"embed"
 	"net/http"
 )
 
-//go:embed ../../web/dist
+//go:embed dist
 var distFS embed.FS
 
 // Handler returns an http.FileSystem for the embedded frontend assets.
