@@ -15,17 +15,19 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/middleware"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/config"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/crypto"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/web"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Server struct {
-	engine     *gin.Engine
-	cfg        *config.Config
-	keyManager *crypto.KeyManager
-	httpServer *http.Server
-	demoRepo   *DemoAssetRepo
+	engine      *gin.Engine
+	cfg         *config.Config
+	keyManager  *crypto.KeyManager
+	authService *service.AuthService
+	httpServer  *http.Server
+	demoRepo    *DemoAssetRepo
 }
 
 // DemoAssetRepo 演示模式内存仓库 (实现 handler.AssetRepository 接口)
@@ -211,6 +213,12 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 		middleware.StructuredLogging(),
 	)
 
+	// 认证服务 (仅生产模式)
+	var authSvc *service.AuthService
+	if !demoMode && pool != nil {
+		authSvc = service.NewAuthService(pool, km)
+	}
+
 	// 健康检查 (无需认证)
 	healthH := handler.NewHealthHandler()
 	engine.GET("/healthz", healthH.Healthz)
@@ -220,31 +228,6 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 			mode = "demo"
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ready", "mode": mode})
-	})
-
-	// API v1 (需要认证)
-	v1 := engine.Group("/api/v1")
-	v1.Use(middleware.Auth(km))
-	v1.Use(middleware.OrgScope())
-
-	var demoRepo *DemoAssetRepo
-
-	if demoMode {
-		demoRepo = NewDemoAssetRepo()
-		seedDemoAssets(demoRepo)
-		registerDemoRoutes(v1, demoRepo)
-	} else {
-		registerProductionRoutes(v1, pool)
-	}
-
-	// Agent 状态 (轻量)
-	v1.GET("/dashboard/agents", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"data": gin.H{"online": 0, "offline": 0, "total": 0},
-		})
-	})
-	v1.GET("/agents", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": []gin.H{}})
 	})
 
 	// 登录 (无需认证)
@@ -257,15 +240,28 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password required"})
 			return
 		}
+
+		if authSvc != nil {
+			result, err := authSvc.Login(c.Request.Context(), input.Username, input.Password)
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, result)
+			return
+		}
+
+		// fallback: demo 模式 hardcoded
 		if input.Username != "admin" || input.Password != "admin" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials (demo: admin/admin)"})
 			return
 		}
 		orgUUID := "00000000-0000-4000-a000-000000000001"
 		userUUID := "00000000-0000-4000-a000-000000000010"
 		token, _ := km.IssueAccessToken(c, userUUID, "super_admin", orgUUID)
 		c.JSON(http.StatusOK, gin.H{
-			"access_token": token,
+			"access_token":  token,
+			"refresh_token": "demo-refresh-placeholder",
 			"user": gin.H{
 				"id":       userUUID,
 				"username": "admin",
@@ -273,6 +269,118 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 				"org_id":   orgUUID,
 			},
 		})
+	})
+
+	// Refresh (无需认证 — refresh token 自身是凭证)
+	engine.POST("/api/v1/auth/refresh", func(c *gin.Context) {
+		var input struct {
+			AccessToken  string `json:"access_token" binding:"required"`
+			RefreshToken string `json:"refresh_token" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "access_token and refresh_token required"})
+			return
+		}
+
+		if authSvc != nil {
+			result, err := authSvc.Refresh(c.Request.Context(), input.AccessToken, input.RefreshToken)
+			if err != nil {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, result)
+			return
+		}
+
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "refresh not available in demo mode"})
+	})
+
+	// Logout (无需认证 — refresh token 自身是凭证)
+	engine.POST("/api/v1/auth/logout", func(c *gin.Context) {
+		var input struct {
+			RefreshToken string `json:"refresh_token" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "refresh_token required"})
+			return
+		}
+
+		if authSvc != nil {
+			_ = authSvc.Logout(c.Request.Context(), input.RefreshToken)
+		}
+		c.JSON(http.StatusOK, gin.H{"data": "ok"})
+	})
+
+	// API v1 (需要认证)
+	v1 := engine.Group("/api/v1")
+	v1.Use(middleware.Auth(km))
+	v1.Use(middleware.OrgScope())
+
+	// /me — 当前用户 (viewer+)
+	v1.GET("/me", func(c *gin.Context) {
+		userID := c.GetString("user_id")
+		role := c.GetString("role")
+		orgID := c.GetString("org_id")
+
+		if authSvc != nil {
+			u, err := authSvc.GetUserByID(c.Request.Context(), userID)
+			if err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": u})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"data": gin.H{
+			"id":       userID,
+			"username": "admin",
+			"role":     role,
+			"org_id":   orgID,
+		}})
+	})
+
+	// /me/password — 改密码 (viewer+)
+	v1.PUT("/me/password", func(c *gin.Context) {
+		var input struct {
+			OldPassword string `json:"old_password" binding:"required"`
+			NewPassword string `json:"new_password" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "old_password and new_password required"})
+			return
+		}
+
+		if authSvc != nil {
+			if err := authSvc.ChangePassword(c.Request.Context(), c.GetString("user_id"), input.OldPassword, input.NewPassword); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": "ok"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"data": "ok"})
+	})
+
+	var demoRepo *DemoAssetRepo
+
+	if demoMode {
+		demoRepo = NewDemoAssetRepo()
+		seedDemoAssets(demoRepo)
+		registerDemoRoutes(v1, demoRepo)
+	} else {
+		registerProductionRoutes(v1, pool)
+	}
+
+	// Agent 状态 (轻量, viewer+)
+	v1.GET("/dashboard/agents", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"data": gin.H{"online": 0, "offline": 0, "total": 0},
+		})
+	})
+	v1.GET("/agents", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"data": []gin.H{}})
 	})
 
 	// 静态文件服务 (生产模式: 嵌入前端 SPA)
@@ -292,11 +400,12 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 	log.Printf("Mode: %s", map[bool]string{true: "DEMO (in-memory)", false: "PRODUCTION"}[demoMode])
 
 	return &Server{
-		engine:     engine,
-		cfg:        cfg,
-		keyManager: km,
-		demoRepo:   demoRepo,
-		httpServer: &http.Server{Addr: addr, Handler: engine},
+		engine:      engine,
+		cfg:         cfg,
+		keyManager:  km,
+		authService: authSvc,
+		demoRepo:    demoRepo,
+		httpServer:  &http.Server{Addr: addr, Handler: engine},
 	}
 }
 

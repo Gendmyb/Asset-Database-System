@@ -18,7 +18,10 @@ export default function Login() {
     setLoading(true)
     try {
       const { data } = await api.post('/auth/login', { username, password })
-      authLogin(data.access_token, data.refresh_token || 'placeholder-phase-c', data.user)
+
+      // 存储 access_token, refresh_token, user
+      const refreshToken = data.refresh_token || ''
+      authLogin(data.access_token, refreshToken, data.user)
       navigate('/assets')
     } catch (err) {
       setError(getApiError(err))
@@ -83,7 +86,7 @@ export default function Login() {
                 background:'rgba(255,255,255,0.02)', color:'var(--text-primary)', fontSize:14,
                 outline:'none', fontFamily:'inherit'
               }}
-              placeholder="Any password (demo)"
+              placeholder="admin123"
               required
             />
           </div>
@@ -109,7 +112,7 @@ export default function Login() {
           </button>
         </form>
         <p style={{ textAlign:'center', marginTop:20, fontSize:12, color:'var(--text-quaternary)' }}>
-          Demo mode — no real authentication required
+          Default: admin / admin123
         </p>
       </div>
     </div>

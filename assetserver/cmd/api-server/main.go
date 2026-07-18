@@ -27,7 +27,7 @@ func main() {
 		log.Fatalf("Config error: %v", err)
 	}
 
-	km, err := crypto.NewKeyManager(nil)
+	km, err := crypto.NewKeyManager(cfg.Auth.Ed25519Seed)
 	if err != nil {
 		log.Fatalf("Key manager error: %v", err)
 	}

@@ -41,6 +41,7 @@ type AuthConfig struct {
 	RefreshTokenTTL time.Duration `default:"7d"`
 	Issuer          string        `default:"asset-db-api"`
 	Audience        string        `default:"asset-db"`
+	Ed25519Seed     string        // 从环境变量 JWT_ED25519_SEED 读取 (64 hex chars)
 }
 
 // 已移除: RedisConfig, VaultConfig, FailOpen* — Phase B 砍掉, 后续按需恢复
@@ -71,6 +72,7 @@ func Load() (*Config, error) {
 			RefreshTokenTTL: 7 * 24 * time.Hour,
 			Issuer:          "asset-db-api",
 			Audience:        "asset-db",
+			Ed25519Seed:     os.Getenv("JWT_ED25519_SEED"),
 		},
 	}
 	return cfg, nil
