@@ -10,7 +10,7 @@
 | 阶段 | 内容 | 状态 | 完成时间 |
 |---|---|---|---|
 | 0 | 环境准备 + 规划落库 | ✅ | 2026-07-19 |
-| A | 止血：契约修复 + 可构建可部署 + CI | ⬜ | |
+| A | 止血：契约修复 + 可构建可部署 + CI | 🔵 | |
 | B | 数据层地基：goose 迁移/事务/审计/租户隔离 | ⬜ | |
 | C | 真实认证与 RBAC | ⬜ | |
 | D | 前端基建重构 + 管理页 | ⬜ | |
@@ -31,3 +31,12 @@
 | 0 | 安装 Node 22.19.0 LTS → ~/.local/node | ✅ | | node v22.19.0 + npm 11.16.0 | 2026-07-19 |
 | 0 | 首次真实验证：`go build ./... && go test ./...` | ✅ | | 编译通过，全部 40 测试 PASS（lock/webhook 包 ok） | 2026-07-19 |
 | 0 | 首次真实验证：`npm ci && npm run build` | ✅ | | tsc 0 errors + vite build ✓（107 modules, 256KB gzip 82KB） | 2026-07-19 |
+| A | 前端：lifecycle 路由 404（PUT→POST /transition） | ✅ | | api.post `/transition` body `{to}` | 2026-07-19 |
+| A | 前端：If-Match 引号修复（"1" → 1） | ✅ | | `String(asset.version)` 无引号 | 2026-07-19 |
+| A | 前端：getApiError 统一错误提取 + 全部 catch 接入 | ✅ | | 兼容 {error:str}/{error:{message}} | 2026-07-19 |
+| A | 前端：client.ts 401 直接登出（标注 TODO Phase C） | ✅ | | 注释旧 refresh 队列代码 | 2026-07-19 |
+| A | 前端：Login refresh_token 兜底 'placeholder-phase-c' | ✅ | | 防 localStorage 存 undefined | 2026-07-19 |
+| A | 前端：删 Agents 页+路由+导航+类型+Dashboard KPI | ✅ | | Agents.tsx 已删，NotFound 页新增 | 2026-07-19 |
+| A | 前端：新增 404 兜底路由 NotFound 页 | ✅ | | `path="*"` catch-all | 2026-07-19 |
+| A | 前端：模式徽标真实化（fetch /healthz 读 mode） | ✅ | | demo 时才显示绿点"演示模式" | 2026-07-19 |
+| A | 前端：tsc --noEmit 通过 | ✅ | | 0 type errors | 2026-07-19 |

@@ -148,7 +148,7 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 
 // UpdateAsset PUT /api/v1/assets/:id (乐观锁)
 func (h *AssetV2Handler) UpdateAsset(c *gin.Context) {
-	vStr := c.GetHeader("If-Match")
+	vStr := strings.Trim(c.GetHeader("If-Match"), "\"")
 	version, err := strconv.Atoi(vStr)
 	if err != nil {
 		c.JSON(http.StatusPreconditionRequired, gin.H{"error": "If-Match header required"})

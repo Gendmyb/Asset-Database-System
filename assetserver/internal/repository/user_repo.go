@@ -75,7 +75,7 @@ func (r *UserRepo) EnsureSeedUsers(ctx context.Context) error {
 	for _, u := range users {
 		_, err := r.pool.Exec(ctx,
 			`INSERT INTO assets.users (id, org_id, username, password_hash, role, email, status, created_at, updated_at)
-			 VALUES ($1,$2,$3,'$2a$10$placeholder','$4',$5,'active',$6,$6)
+			 VALUES ($1,$2,$3,'$2a$10$placeholder',$4,$5,'active',$6,$6)
 			 ON CONFLICT (id) DO NOTHING`,
 			u.id, u.orgID, u.username, u.role, u.email, time.Now())
 		if err != nil {

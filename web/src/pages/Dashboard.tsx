@@ -28,9 +28,8 @@ export default function Dashboard() {
       ) : (
         <>
           {/* KPI Cards */}
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:16, marginBottom:32 }}>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:16, marginBottom:32 }}>
             <KpiCard label="资产总数" value={String(s?.total_assets||0)} color="var(--brand)" />
-            <KpiCard label="在线代理" value="0" color="var(--success)" />
             <KpiCard label="待处理" value="0" color="var(--warning)" />
             <KpiCard label="可用率" value="—" color="#7170ff" />
           </div>

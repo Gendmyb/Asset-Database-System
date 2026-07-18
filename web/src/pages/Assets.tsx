@@ -1,6 +1,7 @@
 // Assets — Linear-style data table with search, filter, pagination, edit, lifecycle
 import { useEffect, useState, useCallback } from 'react'
 import api from '../api/client'
+import { getApiError } from '../lib/errors'
 import type { Asset, PaginatedResponse } from '../types'
 
 const LIFECYCLE_ORDER = ['procurement', 'deployment', 'utilization', 'maintenance', 'retirement'] as const
@@ -413,13 +414,12 @@ function DetailPanel({ asset, onClose, onRefresh }: { asset: Asset; onClose: () 
     setError('')
     try {
       await api.put(`/assets/${asset.id}`, form, {
-        headers: { 'If-Match': `"${asset.version}"` }
+        headers: { 'If-Match': String(asset.version) }
       })
       setEditMode(false)
       onRefresh(asset.id)
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Save failed'
-      setError(msg)
+      setError(getApiError(err))
     }
     setSaving(false)
   }
@@ -428,14 +428,12 @@ function DetailPanel({ asset, onClose, onRefresh }: { asset: Asset; onClose: () 
     setLifecycleLoading(true)
     setError('')
     try {
-      await api.put(`/assets/${asset.id}/lifecycle`, {
-        lifecycle_state: target,
-        version: asset.version,
+      await api.post(`/assets/${asset.id}/transition`, {
+        to: target,
       })
       onRefresh(asset.id)
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Lifecycle transition failed'
-      setError(msg)
+      setError(getApiError(err))
     }
     setLifecycleLoading(false)
   }
@@ -447,8 +445,7 @@ function DetailPanel({ asset, onClose, onRefresh }: { asset: Asset; onClose: () 
       await api.post(`/assets/${asset.id}/release`)
       onRefresh(asset.id)
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Release failed'
-      setError(msg)
+      setError(getApiError(err))
     }
     setReleaseLoading(false)
   }
@@ -749,7 +746,7 @@ function AssignDialog({ asset, onClose, onRefresh }: { asset: Asset; onClose: ()
       onRefresh(asset.id)
       onClose()
     } catch (err: any) {
-      setError(err?.response?.data?.message || err?.message || 'Assign failed')
+      setError(getApiError(err))
     }
     setLoading(false)
   }

@@ -1,0 +1,45 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Build
+        run: go build ./...
+        working-directory: assetserver
+      - name: Vet
+        run: go vet ./...
+        working-directory: assetserver
+      - name: Test
+        run: go test ./...
+        working-directory: assetserver
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: npm ci
+        working-directory: web
+      - name: Type-check
+        run: npx tsc --noEmit
+        working-directory: web
+      - name: Build
+        run: npm run build
+        working-directory: web
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t asset-db .

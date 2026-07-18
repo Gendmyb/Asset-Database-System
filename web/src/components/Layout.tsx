@@ -1,10 +1,10 @@
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
+import { useEffect, useState } from 'react'
 
 const navItems = [
   { path: '/dashboard', label: '仪表盘', icon: '◧' },
   { path: '/assets', label: '资产管理', icon: '⊞' },
-  { path: '/agents', label: '代理', icon: '⬡' },
   { path: '/admin', label: '管理', icon: '⚙' },
 ]
 
@@ -14,6 +14,16 @@ export default function Layout() {
   const { user, logout } = useAuthStore()
   const navigate = useNavigate()
   const { pathname } = useLocation()
+  const [demoMode, setDemoMode] = useState(false)
+
+  useEffect(() => {
+    fetch('/healthz')
+      .then(res => res.json())
+      .then(data => {
+        if (data.mode === 'demo') setDemoMode(true)
+      })
+      .catch(() => {})
+  }, [])
 
   return (
     <div style={{ display:'flex', height:'100vh', background:'var(--bg-base)' }}>
@@ -109,8 +119,12 @@ export default function Layout() {
             {navItems.find(n => pathname.startsWith(n.path))?.label || ''}
           </span>
           <div style={{ flex:1 }} />
-          <span style={{ width:6, height:6, borderRadius:'50%', background:'var(--success)' }} />
-          <span style={{ fontSize:11, color:'var(--text-quaternary)' }}>演示模式</span>
+          {demoMode && (
+            <>
+              <span style={{ width:6, height:6, borderRadius:'50%', background:'var(--success)' }} />
+              <span style={{ fontSize:11, color:'var(--text-quaternary)' }}>演示模式</span>
+            </>
+          )}
         </header>
         <main style={{ flex:1, overflow:'auto' }}>
           <Outlet />

@@ -31,25 +31,3 @@ export interface User {
   role: string
   org_id: string
 }
-
-// Agent 类型定义
-export interface Agent {
-  id: string
-  name: string
-  hostname: string
-  org_id: string
-  status: 'online' | 'offline' | 'error' | 'degraded'
-  last_heartbeat: string | null
-  version: string
-  metadata: Record<string, unknown>
-  created_at: string
-  updated_at: string
-}
-
-export interface AgentHealthStats {
-  total: number
-  online: number
-  offline: number
-  error: number
-  degraded: number
-}

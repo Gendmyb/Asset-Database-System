@@ -15,45 +15,19 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// 响应拦截: 401 refresh + 403 处理
-let isRefreshing = false
-let refreshQueue: Array<(token: string) => void> = []
+// 响应拦截: 401 直接登出 + 403 处理
+// TODO: Phase C 启用 refresh token 逻辑，恢复以下注释代码
+// let isRefreshing = false
+// let refreshQueue: Array<(token: string) => void> = []
 
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
-    const original = error.config
-
-    if (error.response?.status === 401 && !original._retry) {
-      if (isRefreshing) {
-        return new Promise((resolve) => {
-          refreshQueue.push((token: string) => {
-            original.headers.Authorization = `Bearer ${token}`
-            resolve(api(original))
-          })
-        })
-      }
-
-      original._retry = true
-      isRefreshing = true
-
-      try {
-        const refreshToken = localStorage.getItem('refresh_token')
-        const { data } = await axios.post('/api/v1/auth/refresh', { refresh_token: refreshToken })
-        localStorage.setItem('access_token', data.access_token)
-
-        refreshQueue.forEach((cb) => cb(data.access_token))
-        refreshQueue = []
-
-        original.headers.Authorization = `Bearer ${data.access_token}`
-        return api(original)
-      } catch {
-        localStorage.clear()
-        window.location.href = '/login'
-        return Promise.reject(error)
-      } finally {
-        isRefreshing = false
-      }
+    // 401 — 暂时直接登出（Phase C 启用 refresh 后再替换）
+    if (error.response?.status === 401) {
+      localStorage.clear()
+      window.location.href = '/login'
+      return Promise.reject(error)
     }
 
     if (error.response?.status === 403) {

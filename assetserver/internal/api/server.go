@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/crypto"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/domain"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/webfs"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -65,11 +68,28 @@ func (r *DemoAssetRepo) List(orgID string, search string, typeID string, status 
 
 	sortAssetsDesc(result)
 
-	hasMore := len(result) > limit
-	if hasMore {
-		result = result[:limit]
+	// 游标分页: cursor 为偏移量整数索引
+	offset := 0
+	if cursor != "" {
+		if n, err := strconv.Atoi(cursor); err == nil && n > 0 {
+			offset = n
+		}
 	}
-	return result, "", hasMore, nil
+	total := len(result)
+	if offset >= total {
+		return []handler.Asset{}, "", false, nil
+	}
+	end := offset + limit
+	hasMore := end < total
+	if end > total {
+		end = total
+	}
+	page := result[offset:end]
+	nextCursor := ""
+	if hasMore {
+		nextCursor = strconv.Itoa(end)
+	}
+	return page, nextCursor, hasMore, nil
 }
 
 func (r *DemoAssetRepo) GetByID(id string) (*handler.Asset, error) {
@@ -213,87 +233,89 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 
 	var demoRepo *DemoAssetRepo
 
-	// 公共路由: 资产类型 + 仪表盘 (两种模式都注册)
-	v1.GET("/asset-types", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": []gin.H{
-			{"id": "10000000-0000-4000-a000-000000000001", "name": "笔记本电脑", "category": "hardware", "icon": "laptop"},
-			{"id": "10000000-0000-4000-a000-000000000002", "name": "服务器", "category": "hardware", "icon": "server"},
-			{"id": "10000000-0000-4000-a000-000000000003", "name": "显示器", "category": "hardware", "icon": "monitor"},
-			{"id": "10000000-0000-4000-a000-000000000004", "name": "网络设备", "category": "hardware", "icon": "network"},
-			{"id": "10000000-0000-4000-a000-000000000005", "name": "打印机", "category": "hardware", "icon": "printer"},
-			{"id": "10000000-0000-4000-a000-000000000006", "name": "手机", "category": "hardware", "icon": "phone"},
-		}})
-	})
-
-	// 用户列表 (两种模式都需要，供领用选择)
-	v1.GET("/users", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": []gin.H{
-			{"id": "00000000-0000-4000-a000-000000000010", "username": "admin", "role": "super_admin", "org_id": "00000000-0000-4000-a000-000000000001"},
-			{"id": "00000000-0000-4000-a000-000000000020", "username": "张伟", "role": "operator", "org_id": "00000000-0000-4000-a000-000000000001"},
-			{"id": "00000000-0000-4000-a000-000000000030", "username": "李娜", "role": "operator", "org_id": "00000000-0000-4000-a000-000000000001"},
-			{"id": "00000000-0000-4000-a000-000000000040", "username": "王强", "role": "viewer", "org_id": "00000000-0000-4000-a000-000000000001"},
-		}})
-	})
-	v1.GET("/users/:id", func(c *gin.Context) {
-		names := map[string]string{
-			"00000000-0000-4000-a000-000000000010": "admin",
-			"00000000-0000-4000-a000-000000000020": "张伟",
-			"00000000-0000-4000-a000-000000000030": "李娜",
-			"00000000-0000-4000-a000-000000000040": "王强",
-		}
-		name := names[c.Param("id")]
-		if name == "" {
-			name = "未知用户"
-		}
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": c.Param("id"), "username": name}})
-	})
-
-	// 系统设置 (两种模式)
-	demoSettings := map[string]string{
-		"asset_tag_prefix": "AST-",
-		"org_name":         "Demo Corp",
-	}
-	v1.GET("/settings", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": demoSettings})
-	})
-	v1.PUT("/settings", func(c *gin.Context) {
-		var input map[string]string
-		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		for k, v := range input {
-			demoSettings[k] = v
-		}
-		c.JSON(http.StatusOK, gin.H{"data": "ok"})
-	})
-	v1.GET("/settings/next-tag", func(c *gin.Context) {
-		orgID := c.GetString("org_id")
-		if orgID == "" {
-			orgID = "00000000-0000-4000-a000-000000000001"
-		}
-		prefix := demoSettings["asset_tag_prefix"]
-		if prefix == "" {
-			prefix = "AST-"
-		}
-		// 统计当前资产数 +1
-		count := 0
-		demoRepo.mu.RLock()
-		for _, a := range demoRepo.assets {
-			if a.OrgID == orgID && a.DeletedAt == nil {
-				count++
-			}
-		}
-		demoRepo.mu.RUnlock()
-		tag := fmt.Sprintf("%s%03d", prefix, count+1)
-		c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag}})
-	})
+	// 模式相关路由（asset-types, users, settings）在 if/else 分支内按模式注册
+	// 避免生产模式下访问 nil demoRepo 引发 panic
 
 	if demoMode {
 		// === DEMO 模式: 使用内存仓库 ===
 		demoRepo = NewDemoAssetRepo()
 		seedDemoAssets(demoRepo)
 		assetHandler := handler.NewAssetHandler(demoRepo)
+
+		// 系统设置 (DEMO 内存实现)
+		demoSettings := map[string]string{
+			"asset_tag_prefix": "AST-",
+			"org_name":         "Demo Corp",
+		}
+		v1.GET("/settings", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"data": demoSettings})
+		})
+		v1.PUT("/settings", func(c *gin.Context) {
+			var input map[string]string
+			if err := c.ShouldBindJSON(&input); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			for k, v := range input {
+				demoSettings[k] = v
+			}
+			c.JSON(http.StatusOK, gin.H{"data": "ok"})
+		})
+		v1.GET("/settings/next-tag", func(c *gin.Context) {
+			orgID := c.GetString("org_id")
+			if orgID == "" {
+				orgID = "00000000-0000-4000-a000-000000000001"
+			}
+			prefix := demoSettings["asset_tag_prefix"]
+			if prefix == "" {
+				prefix = "AST-"
+			}
+			count := 0
+			demoRepo.mu.RLock()
+			for _, a := range demoRepo.assets {
+				if a.OrgID == orgID && a.DeletedAt == nil {
+					count++
+				}
+			}
+			demoRepo.mu.RUnlock()
+			tag := fmt.Sprintf("%s%03d", prefix, count+1)
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag}})
+		})
+
+		// 资产类型 (DEMO 硬编码)
+		v1.GET("/asset-types", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"data": []gin.H{
+				{"id": "10000000-0000-4000-a000-000000000001", "name": "笔记本电脑", "category": "hardware", "icon": "laptop"},
+				{"id": "10000000-0000-4000-a000-000000000002", "name": "服务器", "category": "hardware", "icon": "server"},
+				{"id": "10000000-0000-4000-a000-000000000003", "name": "显示器", "category": "hardware", "icon": "monitor"},
+				{"id": "10000000-0000-4000-a000-000000000004", "name": "网络设备", "category": "hardware", "icon": "network"},
+				{"id": "10000000-0000-4000-a000-000000000005", "name": "打印机", "category": "hardware", "icon": "printer"},
+				{"id": "10000000-0000-4000-a000-000000000006", "name": "手机", "category": "hardware", "icon": "phone"},
+			}})
+		})
+
+		// 用户列表 (DEMO 硬编码)
+		v1.GET("/users", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"data": []gin.H{
+				{"id": "00000000-0000-4000-a000-000000000010", "username": "admin", "role": "super_admin", "org_id": "00000000-0000-4000-a000-000000000001"},
+				{"id": "00000000-0000-4000-a000-000000000020", "username": "张伟", "role": "operator", "org_id": "00000000-0000-4000-a000-000000000001"},
+				{"id": "00000000-0000-4000-a000-000000000030", "username": "李娜", "role": "operator", "org_id": "00000000-0000-4000-a000-000000000001"},
+				{"id": "00000000-0000-4000-a000-000000000040", "username": "王强", "role": "viewer", "org_id": "00000000-0000-4000-a000-000000000001"},
+			}})
+		})
+		v1.GET("/users/:id", func(c *gin.Context) {
+			names := map[string]string{
+				"00000000-0000-4000-a000-000000000010": "admin",
+				"00000000-0000-4000-a000-000000000020": "张伟",
+				"00000000-0000-4000-a000-000000000030": "李娜",
+				"00000000-0000-4000-a000-000000000040": "王强",
+			}
+			name := names[c.Param("id")]
+			if name == "" {
+				name = "未知用户"
+			}
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": c.Param("id"), "username": name}})
+		})
 
 		// 资产 CRUD
 		v1.GET("/assets", assetHandler.ListAssets)
@@ -404,12 +426,24 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 				c.JSON(http.StatusConflict, gin.H{"error": "资产未被领用，无法转移"})
 				return
 			}
+			// 落实状态一致性: 保留 assigned 状态，记录新领用人到 Properties
+			updates := map[string]interface{}{"status": "assigned"}
+			if asset.Properties == nil {
+				asset.Properties = make(map[string]interface{})
+			}
+			asset.Properties["assigned_to"] = input.ToUserID
+			updates["properties"] = asset.Properties
+			_, err = demoRepo.Update(assetID, updates, asset.Version)
+			if err != nil {
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+				return
+			}
 			c.JSON(http.StatusOK, gin.H{
 				"data": gin.H{
 					"asset_id":   assetID,
 					"to_user_id": input.ToUserID,
 					"from_user":  c.GetString("user_id"),
-					"status":     "transferred",
+					"status":     "assigned",
 				},
 			})
 		})
@@ -458,6 +492,66 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 		assetV2 := handler.NewAssetV2Handler(assetRepo, settingsRepo)
 		assignmentH := handler.NewAssignmentHandler(assignmentRepo)
 
+		// 系统设置 (PG)
+		v1.GET("/settings", func(c *gin.Context) {
+			all, err := settingsRepo.GetAll(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": all})
+		})
+		v1.PUT("/settings", func(c *gin.Context) {
+			var input map[string]string
+			if err := c.ShouldBindJSON(&input); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			for k, v := range input {
+				if err := settingsRepo.Set(c.Request.Context(), k, v); err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+			}
+			c.JSON(http.StatusOK, gin.H{"data": "ok"})
+		})
+		v1.GET("/settings/next-tag", func(c *gin.Context) {
+			orgID := c.GetString("org_id")
+			if orgID == "" {
+				orgID = "00000000-0000-4000-a000-000000000001"
+			}
+			tag, err := settingsRepo.NextAssetTag(c.Request.Context(), orgID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"tag": tag}})
+		})
+
+		// 资产类型 (PG)
+		v1.GET("/asset-types", func(c *gin.Context) {
+			types, err := dashRepo.ListAssetTypes(c.Request.Context())
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": types})
+		})
+
+		// 用户列表 (PG)
+		v1.GET("/users", func(c *gin.Context) {
+			users, err := userRepo.ListByOrg(c.Request.Context(), c.GetString("org_id"))
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"data": users})
+		})
+		v1.GET("/users/:id", func(c *gin.Context) {
+			name, _ := userRepo.GetUsername(c.Request.Context(), c.Param("id"))
+			c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": c.Param("id"), "username": name}})
+		})
+
 		// 资产 CRUD (PG)
 		v1.GET("/assets", assetV2.ListAssets)
 		v1.POST("/assets", assetV2.CreateAsset)
@@ -465,6 +559,11 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 		v1.PUT("/assets/:id", assetV2.UpdateAsset)
 		v1.DELETE("/assets/:id", assetV2.DeleteAsset)
 		v1.POST("/assets/:id/transition", assetV2.LifecycleTransition)
+
+		// 历史记录 (PG 暂未实现审计表，返回空列表)
+		v1.GET("/assets/:id/history", func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
+		})
 
 		// 领用管理 (PG)
 		v1.POST("/assets/:id/assign", assignmentH.Assign)
@@ -489,6 +588,18 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 				return
 			}
 			c.JSON(http.StatusOK, gin.H{"data": stats})
+		})
+	}
+
+	// 静态文件服务 (生产模式: 嵌入前端 SPA)
+	if !demoMode {
+		engine.NoRoute(func(c *gin.Context) {
+			path := c.Request.URL.Path
+			if strings.HasPrefix(path, "/api") || path == "/healthz" || path == "/readyz" {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
+			c.FileFromFS(path, webfs.Handler())
 		})
 	}
 

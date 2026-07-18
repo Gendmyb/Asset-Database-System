@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import api from '../api/client'
+import { getApiError } from '../lib/errors'
 
 export default function Login() {
   const [username, setUsername] = useState('admin')
@@ -17,10 +18,10 @@ export default function Login() {
     setLoading(true)
     try {
       const { data } = await api.post('/auth/login', { username, password })
-      authLogin(data.access_token, data.refresh_token, data.user)
+      authLogin(data.access_token, data.refresh_token || 'placeholder-phase-c', data.user)
       navigate('/assets')
-    } catch {
-      setError('Invalid credentials')
+    } catch (err) {
+      setError(getApiError(err))
     } finally {
       setLoading(false)
     }

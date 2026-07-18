@@ -1,8 +1,5 @@
 # Asset Database System — Docker Compose
-# 对应架构文档 §13.1 开发环境 + §13.2 生产环境
-# 开发环境: PostgreSQL 16 + Redis 7 + API Server + Grafana
-
-version: "3.8"
+# 生产部署: PostgreSQL 16 + API Server (含嵌入前端)
 
 services:
   # ---- PostgreSQL 16 (SOT) ----
@@ -11,35 +8,22 @@ services:
     container_name: asset-db-pg
     environment:
       POSTGRES_DB: assetdb
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: devpassword
+      POSTGRES_USER: app_user
+      POSTGRES_PASSWORD: app_pass
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./assetserver/migrations:/docker-entrypoint-initdb.d
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d assetdb"]
+      test: ["CMD-SHELL", "pg_isready -U app_user -d assetdb"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # ---- Redis 7 (缓存 + 事件总线) ----
-  redis:
-    image: redis:7-alpine
-    container_name: asset-db-redis
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  # ---- API Server (Go + Gin) ----
-  api-server:
+  # ---- API Server (Go + Gin, 含嵌入前端 SPA) ----
+  app:
     build:
-      context: ./assetserver
+      context: ./
       dockerfile: Dockerfile
     container_name: asset-db-api
     ports:
@@ -47,29 +31,23 @@ services:
     environment:
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "8080"
+      DATABASE_URL: "postgres://app_user:app_pass@postgres:5432/assetdb?sslmode=disable&search_path=assets"
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_NAME: assetdb
-      DB_USER: postgres
-      DATABASE_PASSWORD: devpassword
-      REDIS_ADDR: redis:6379
+      DB_USER: app_user
+      DATABASE_PASSWORD: app_pass
+      DEMO: "false"
+      # Generate a seed with: openssl rand -hex 32
+      JWT_ED25519_SEED: ""
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
-
-  # ---- Grafana OSS (仪表盘) ----
-  grafana:
-    image: grafana/grafana-oss:latest
-    container_name: asset-db-grafana
-    ports:
-      - "3000:3000"
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_INSTALL_PLUGINS: ""
-    depends_on:
-      - postgres
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
 volumes:
   pgdata:
