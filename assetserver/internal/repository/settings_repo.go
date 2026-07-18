@@ -120,6 +120,23 @@ func (r *SettingsRepo) NextMaintenanceOrderNo(ctx context.Context, q DBTX, orgID
 	return "MNT-" + padInt(int(endSeq), 4), nil
 }
 
+// NextStocktakePlanNo 生成下一个盘点计划编号 (scope='stocktake', 前缀 'STK-')
+func (r *SettingsRepo) NextStocktakePlanNo(ctx context.Context, q DBTX, orgID string) (string, error) {
+	var endSeq int64
+	err := q.QueryRow(ctx,
+		`INSERT INTO assets.doc_sequences (org_id, scope, next_seq)
+		 VALUES ($1, 'stocktake', $2)
+		 ON CONFLICT (org_id, scope) DO UPDATE SET next_seq = assets.doc_sequences.next_seq + $2
+		 RETURNING next_seq`,
+		orgID, 1,
+	).Scan(&endSeq)
+	if err != nil {
+		return "", fmt.Errorf("claim stocktake sequence: %w", err)
+	}
+
+	return "STK-" + padInt(int(endSeq), 4), nil
+}
+
 func formatTag(prefix string, seq int) string {
 	return prefix + padInt(seq, 4)
 }

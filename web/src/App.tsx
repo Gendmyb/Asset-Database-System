@@ -12,6 +12,7 @@ import NotFound from './pages/NotFound'
 const AssignmentsPage = lazy(() => import('./pages/AssignmentsPage'))
 const MaintenancePage = lazy(() => import('./pages/MaintenancePage'))
 const StocktakesPage = lazy(() => import('./pages/StocktakesPage'))
+const StocktakeDetail = lazy(() => import('./pages/StocktakeDetail'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const UsersPage = lazy(() => import('./pages/admin/Users'))
 const SettingsPage = lazy(() => import('./pages/admin/Settings'))
@@ -83,6 +84,14 @@ export default function App() {
             element={
               <Suspense fallback={<PageLoader />}>
                 <MaintenancePage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/stocktakes/:id"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <StocktakeDetail />
               </Suspense>
             }
           />

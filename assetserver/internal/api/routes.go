@@ -28,6 +28,7 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	userRepo := repository.NewUserRepo()
 	settingsRepo := repository.NewSettingsRepo()
 	maintenanceRepo := repository.NewMaintenanceRepo()
+	stocktakeRepo := repository.NewStocktakeRepo()
 
 	// 确保种子用户存在
 	_ = userRepo.EnsureSeedUsers(context.Background(), pool)
@@ -36,6 +37,8 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	assignmentH := handler.NewAssignmentHandler(assignmentRepo, pool)
 	maintenanceSvc := service.NewMaintenanceService(maintenanceRepo, assetRepo, assignmentRepo, settingsRepo)
 	maintenanceH := handler.NewMaintenanceHandler(maintenanceSvc, pool)
+	stocktakeSvc := service.NewStocktakeService(stocktakeRepo, assetRepo, settingsRepo)
+	stocktakeH := handler.NewStocktakeHandler(stocktakeSvc, pool)
 
 	// === RBAC 分组 ===
 	// viewer+ (默认 — 所有已认证用户)
@@ -361,4 +364,14 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 
 	// 报废 (admin+)
 	admin.POST("/assets/:id/retire", maintenanceH.RetireAsset)
+
+	// ======== Phase G: 盘点管理 ========
+	admin.POST("/stocktakes", stocktakeH.CreatePlan)
+	viewer.GET("/stocktakes", stocktakeH.ListPlans)
+	viewer.GET("/stocktakes/:id", stocktakeH.GetPlan)
+	admin.POST("/stocktakes/:id/start", stocktakeH.StartPlan)
+	manager.PUT("/stocktakes/:id/items/:itemId", stocktakeH.UpdateItem)
+	manager.POST("/stocktakes/:id/items", stocktakeH.AddSurplusItem)
+	admin.POST("/stocktakes/:id/complete", stocktakeH.CompletePlan)
+	viewer.GET("/stocktakes/:id/report", stocktakeH.GetPlanReport)
 }

@@ -24,9 +24,21 @@ const maintenanceCategoryMap: Record<string, { bg: string; color: string; label:
   upkeep: { bg: 'rgba(59,130,246,0.1)', color: '#60a5fa', label: '保养' },
 }
 
+const stocktakeStatusMap: Record<string, { bg: string; color: string; label: string }> = {
+  draft: { bg: 'rgba(255,255,255,0.05)', color: '#8a8f98', label: '草稿' },
+  in_progress: { bg: 'rgba(59,130,246,0.1)', color: '#60a5fa', label: '进行中' },
+  completed: { bg: 'rgba(39,166,68,0.1)', color: '#4ade80', label: '已完成' },
+  canceled: { bg: 'rgba(239,68,68,0.1)', color: '#f87171', label: '已取消' },
+}
+
 interface BadgeProps {
   status?: string
-  type?: 'status' | 'assignment' | 'maintenance_status' | 'maintenance_category'
+  type?:
+    | 'status'
+    | 'assignment'
+    | 'maintenance_status'
+    | 'maintenance_category'
+    | 'stocktake_status'
 }
 
 export default function Badge({ status, type = 'status' }: BadgeProps) {
@@ -92,6 +104,27 @@ export default function Badge({ status, type = 'status' }: BadgeProps) {
         }}
       >
         {c.label}
+      </span>
+    )
+  }
+
+  if (type === 'stocktake_status') {
+    const s = stocktakeStatusMap[status || ''] || {
+      bg: 'rgba(255,255,255,0.05)',
+      color: 'var(--text-tertiary)',
+      label: status || '—',
+    }
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+        <span
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: s.color,
+          }}
+        />
+        <span style={{ color: s.color, fontWeight: 500 }}>{s.label}</span>
       </span>
     )
   }
