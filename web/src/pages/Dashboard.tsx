@@ -1,72 +1,181 @@
-import { useEffect, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import api from '../api/client'
 
+const STATUS_COLORS: Record<string, string> = {
+  available: '#4ade80',
+  assigned: '#818cf8',
+  maintenance: '#fbbf24',
+  broken: '#f87171',
+  borrowed: '#c084fc',
+  retired: '#8a8f98',
+}
+
+const STATUS_LABELS: Record<string, string> = {
+  available: '可用',
+  assigned: '已领用',
+  maintenance: '维护中',
+  broken: '已损坏',
+  borrowed: '已出借',
+  retired: '已退役',
+}
+
+const LIFECYCLE_LABELS: Record<string, string> = {
+  procurement: '采购中',
+  deployment: '部署中',
+  utilization: '使用中',
+  maintenance: '维护中',
+  retirement: '已退役',
+}
+
+const TYPE_COLORS = ['#5e6ad2', '#7170ff', '#4ade80', '#fbbf24', '#f87171', '#c084fc', '#38bdf8', '#a78bfa']
+
 export default function Dashboard() {
-  const [stats, setStats] = useState<Record<string,unknown>|null>(null)
-  const [loading, setLoading] = useState(true)
+  const { data: stats, isLoading } = useQuery({
+    queryKey: ['dashboard', 'overview'],
+    queryFn: () => api.get('/dashboard/overview').then((r) => r.data?.data || r.data),
+  })
 
-  useEffect(() => {
-    api.get('/dashboard/overview').then(({data}) => { setStats(data.data); setLoading(false) })
-      .catch(() => setLoading(false))
-  }, [])
+  const s = stats as Record<string, unknown> | null
 
-  const s = stats as Record<string,unknown>|null
+  // Build pie data from by_status
+  const pieData = s?.by_status
+    ? Object.entries(s.by_status as Record<string, number>).map(([key, value]) => ({
+        name: STATUS_LABELS[key] || key,
+        value,
+        color: STATUS_COLORS[key] || 'var(--text-quaternary)',
+      }))
+    : []
+
+  // Build bar data from by_type or lifecycle
+  const barData = s?.by_type
+    ? Object.entries(s.by_type as Record<string, number>).map(([key, value]) => ({
+        name: key,
+        count: value,
+      }))
+    : s?.by_lifecycle
+      ? Object.entries(s.by_lifecycle as Record<string, number>).map(([key, value]) => ({
+          name: LIFECYCLE_LABELS[key] || key,
+          count: value,
+        }))
+      : []
+
+  // KPI data
+  const totalAssets = Number(s?.total_assets || 0)
+  const availableCount = s?.by_status
+    ? (s.by_status as Record<string, number>).available || 0
+    : 0
+  const availableRate = totalAssets > 0
+    ? Math.round((availableCount / totalAssets) * 100)
+    : 0
+  const maintenanceCount = s?.by_status
+    ? (s.by_status as Record<string, number>).maintenance || 0
+    : 0
 
   return (
-    <div style={{ padding:32, maxWidth:1200 }}>
-      <div style={{ marginBottom:32 }}>
-        <h1 style={{ fontSize:20, fontWeight:600, color:'var(--text-primary)', letterSpacing:'-0.24px', marginBottom:4 }}>
+    <div style={{ padding: 32, maxWidth: 1200 }}>
+      <div style={{ marginBottom: 32 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.24px', marginBottom: 4 }}>
           仪表盘
         </h1>
-        <p style={{ fontSize:13, color:'var(--text-tertiary)' }}>IT 资产概览</p>
+        <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>IT 资产概览</p>
       </div>
 
-      {loading ? (
-        <div style={{ display:'flex', justifyContent:'center', padding:80 }}>
-          <div style={{ width:24, height:24, border:'2px solid var(--border-default)', borderTopColor:'var(--brand)', borderRadius:'50%', animation:'spin 0.6s linear infinite' }} />
+      {isLoading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: 80 }}>
+          <div style={{ width: 24, height: 24, border: '2px solid var(--border-default)', borderTopColor: 'var(--brand)', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
         </div>
       ) : (
         <>
           {/* KPI Cards */}
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:16, marginBottom:32 }}>
-            <KpiCard label="资产总数" value={String(s?.total_assets||0)} color="var(--brand)" />
-            <KpiCard label="待处理" value="0" color="var(--warning)" />
-            <KpiCard label="可用率" value="—" color="#7170ff" />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 32 }}>
+            <KpiCard label="资产总数" value={String(totalAssets)} color="var(--brand)" />
+            <KpiCard label="维护中" value={String(maintenanceCount)} color="var(--warning)" />
+            <KpiCard label="可用率" value={`${availableRate}%`} color="#7170ff" />
           </div>
 
-          {/* Charts */}
-          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }}>
+          {/* Charts Row 1: Pie + Bar */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 32 }}>
+            {/* Status Distribution Pie Chart */}
             <Panel title="状态分布">
-              {s?.by_status ? Object.entries(s.by_status as Record<string,number>).map(([k,v]) => {
-                const total = Object.values(s.by_status as Record<string,number>).reduce((a,b)=>a+b,0)||1
-                const pct = Math.round(v/total*100)
-                return (
-                  <div key={k} style={{ marginBottom:12 }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4, fontSize:13 }}>
-                      <span style={{ color:'var(--text-secondary)' }}>{statusLabel(k)}</span>
-                      <span style={{ fontWeight:500, color:'var(--text-primary)' }}>{v}</span>
-                    </div>
-                    <div style={{ height:4, background:'rgba(255,255,255,0.05)', borderRadius:2, overflow:'hidden' }}>
-                      <div style={{ height:'100%', width:`${pct}%`, background:statusColor(k), borderRadius:2, transition:'width .3s' }} />
-                    </div>
-                  </div>
-                )
-              }) : <EmptyState />}
+              {pieData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={260}>
+                  <PieChart>
+                    <Pie
+                      data={pieData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={55}
+                      outerRadius={90}
+                      paddingAngle={3}
+                      dataKey="value"
+                      label={({ name, value }) => `${name} ${value}`}
+                      labelLine={{ stroke: 'var(--text-quaternary)', strokeWidth: 1 }}
+                    >
+                      {pieData.map((entry, i) => (
+                        <Cell key={i} fill={entry.color} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--border-default)',
+                        borderRadius: 8,
+                        color: 'var(--text-primary)',
+                        fontSize: 13,
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <EmptyState />
+              )}
             </Panel>
 
-            <Panel title="生命周期分布">
-              {s?.by_lifecycle ? (
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8 }}>
-                  {Object.entries(s.by_lifecycle as Record<string,number>).map(([k,v]) => (
-                    <div key={k} style={{ background:'rgba(255,255,255,0.02)', borderRadius:8, padding:14, border:'1px solid var(--border-subtle)' }}>
-                      <div style={{ fontSize:24, fontWeight:600, color:'var(--text-primary)' }}>{v}</div>
-                      <div style={{ fontSize:12, color:'var(--text-tertiary)', marginTop:2 }}>{lifecycleLabel(k)}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : <EmptyState />}
+            {/* Bar Chart: Type or Lifecycle distribution */}
+            <Panel title={s?.by_type ? '资产类型分布' : '生命周期分布'}>
+              {barData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={barData} layout="vertical" margin={{ left: 10, right: 10 }}>
+                    <XAxis type="number" tick={{ fontSize: 11, fill: 'var(--text-quaternary)' }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="name" tick={{ fontSize: 12, fill: 'var(--text-secondary)' }} axisLine={false} tickLine={false} width={80} />
+                    <Tooltip
+                      contentStyle={{
+                        background: 'var(--bg-surface)',
+                        border: '1px solid var(--border-default)',
+                        borderRadius: 8,
+                        color: 'var(--text-primary)',
+                        fontSize: 13,
+                      }}
+                    />
+                    <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                      {barData.map((_, i) => (
+                        <Cell key={i} fill={TYPE_COLORS[i % TYPE_COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <EmptyState />
+              )}
             </Panel>
           </div>
+
+          {/* Lifecycle Grid (keep existing style) */}
+          <Panel title="生命周期分布明细">
+            {s?.by_lifecycle ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 8 }}>
+                {Object.entries(s.by_lifecycle as Record<string, number>).map(([k, v]) => (
+                  <div key={k} style={{ background: 'rgba(255,255,255,0.02)', borderRadius: 8, padding: 14, border: '1px solid var(--border-subtle)' }}>
+                    <div style={{ fontSize: 24, fontWeight: 600, color: 'var(--text-primary)' }}>{v}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>{LIFECYCLE_LABELS[k] || k}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState />
+            )}
+          </Panel>
         </>
       )}
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
@@ -74,43 +183,30 @@ export default function Dashboard() {
   )
 }
 
-function KpiCard({ label, value, color }: { label:string; value:string; color:string }) {
+function KpiCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div style={{
-      background:'var(--bg-surface)', borderRadius:10, padding:'20px 24px',
-      border:'1px solid var(--border-subtle)', borderLeft:`3px solid ${color}`
+      background: 'var(--bg-surface)', borderRadius: 10, padding: '20px 24px',
+      border: '1px solid var(--border-subtle)', borderLeft: `3px solid ${color}`,
     }}>
-      <div style={{ fontSize:12, color:'var(--text-tertiary)', fontWeight:500, marginBottom:8 }}>{label}</div>
-      <div style={{ fontSize:28, fontWeight:600, color:'var(--text-primary)', letterSpacing:'-0.5px' }}>{value}</div>
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)', fontWeight: 500, marginBottom: 8 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 600, color: 'var(--text-primary)', letterSpacing: '-0.5px' }}>{value}</div>
     </div>
   )
 }
 
-function Panel({ title, children }: { title:string; children:React.ReactNode }) {
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div style={{
-      background:'var(--bg-surface)', borderRadius:10, padding:24,
-      border:'1px solid var(--border-subtle)'
+      background: 'var(--bg-surface)', borderRadius: 10, padding: 24,
+      border: '1px solid var(--border-subtle)',
     }}>
-      <h3 style={{ fontSize:14, fontWeight:600, color:'var(--text-secondary)', marginBottom:16, letterSpacing:'-0.15px' }}>{title}</h3>
+      <h3 style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 16, letterSpacing: '-0.15px' }}>{title}</h3>
       {children}
     </div>
   )
 }
 
 function EmptyState() {
-  return <div style={{ textAlign:'center', padding:40, color:'var(--text-quaternary)', fontSize:13 }}>暂无数据</div>
-}
-
-function statusLabel(s:string) {
-  const m: Record<string,string> = { available:'可用', assigned:'已领用', maintenance:'维护中' }
-  return m[s]||s
-}
-function statusColor(s:string) {
-  const m: Record<string,string> = { available:'var(--success)', assigned:'var(--brand)', maintenance:'var(--warning)' }
-  return m[s]||'var(--text-quaternary)'
-}
-function lifecycleLabel(s:string) {
-  const m: Record<string,string> = { procurement:'采购中', deployment:'部署中', utilization:'使用中', maintenance:'维护中', retirement:'已退役' }
-  return m[s]||s
+  return <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-quaternary)', fontSize: 13 }}>暂无数据</div>
 }

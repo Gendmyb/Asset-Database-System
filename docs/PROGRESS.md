@@ -13,8 +13,8 @@
 | A | 止血：契约修复 + 可构建可部署 + CI | ✅ | 2026-07-19 |
 | B | 数据层地基：goose 迁移/事务/审计/租户隔离 | ✅ | 2026-07-19 |
 | C | 真实认证与 RBAC | ✅ | 2026-07-19 |
-| D | 前端基建重构 + 管理页 | 🔵 | |
-| E | 入库增强 + 领用/借用/归还闭环 | ⬜ | |
+| D | 前端基建重构 + 管理页 | ✅ | 2026-07-19 |
+| E | 入库增强 + 领用/借用/归还闭环 | 🔵 | |
 | F | 维修/保养工单 + 报废 | ⬜ | |
 | G | 盘点 | ⬜ | |
 | H | 折旧、报表、导入导出 | ⬜ | |
@@ -55,3 +55,11 @@
 | B | Step8: Event bus 接线（DefaultBus + log consumer） | ✅ | | service commit 后 Publish | 2026-07-19 |
 | B | Step9: server.go 拆分（routes/routes_demo）+ config 清理 | ✅ | | 800+→360行；删 Redis/Vault 配置 | 2026-07-19 |
 | B | go build + go test + go vet 全部通过 | ✅ | | 0 errors 0 regressions | 2026-07-19 |
+| D | Step1: API 模块层（auth/assets/assignments/users/settings/lookup） | ✅ | | 6 文件，类型化 Promise 函数 | 2026-07-19 |
+| D | Step2: UI 组件库（Button/Input/Select/Modal/Drawer/ConfirmDialog/Badge/EmptyState/Spinner/DataTable/FormField/Toaster） | ✅ | | 12 文件，沿用 Linear 暗色设计系统 | 2026-07-19 |
+| D | Step3: QueryClientProvider + sonner Toaster 注入 App.tsx | ✅ | | staleTime:30s retry:1 | 2026-07-19 |
+| D | Step4: Assets.tsx 拆分（856行→150行，5个组件） | ✅ | | AssetTable/Filters/DetailPanel/CreateAssetModal/AssignDialog | 2026-07-19 |
+| D | Step5: 导航重组（7项+路由占位） | ✅ | | 含5个占位页（E/F/G/H阶段填充） | 2026-07-19 |
+| D | Step6: 管理页 admin/Users + admin/Settings | ✅ | | 用户CRUD+重置密码+系统设置+位置 | 2026-07-19 |
+| D | Step7: Dashboard recharts（PieChart+Barchart） | ✅ | | 状态 donut + 类型 bar | 2026-07-19 |
+| D | npm run build（tsc+vite）通过 | ✅ | | 156 modules, 315KB (99KB gzip)，+recharts 738KB chunk | 2026-07-19 |
