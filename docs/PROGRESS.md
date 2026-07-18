@@ -15,8 +15,8 @@
 | C | 真实认证与 RBAC | ✅ | 2026-07-19 |
 | D | 前端基建重构 + 管理页 | ✅ | 2026-07-19 |
 | E | 入库增强 + 领用/借用/归还闭环 | ✅ | 2026-07-19 |
-| F | 维修/保养工单 + 报废 | 🔵 | |
-| G | 盘点 | ⬜ | |
+| F | 维修/保养工单 + 报废 | ✅ | 2026-07-19 |
+| G | 盘点 | 🔵 | |
 | H | 折旧、报表、导入导出 | ⬜ | |
 | I | Webhook 接线、文档校准、CI 完整化 | ⬜ | |
 | J | 终验双门禁（PM 代理 + 逻辑审计代理） | ⬜ | |
@@ -63,3 +63,5 @@
 | D | Step6: 管理页 admin/Users + admin/Settings | ✅ | | 用户CRUD+重置密码+系统设置+位置 | 2026-07-19 |
 | D | Step7: Dashboard recharts（PieChart+Barchart） | ✅ | | 状态 donut + 类型 bar | 2026-07-19 |
 | D | npm run build（tsc+vite）通过 | ✅ | | 156 modules, 315KB (99KB gzip)，+recharts 738KB chunk | 2026-07-19 |
+| F | 后端: 007迁移(maintenance_orders)+service+handler+8路由 | ✅ | | go build/test/vet 全通过 | 2026-07-19 |
+| F | 前端: MaintenancePage+AssetDetailPanel报修报废+Badge扩展+ConfirmDialog children | ✅ | | tsc 0 errors, vite build 成功 | 2026-07-19 |

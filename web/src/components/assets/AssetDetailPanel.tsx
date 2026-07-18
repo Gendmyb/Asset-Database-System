@@ -1,13 +1,18 @@
 import { useState, useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useForm } from 'react-hook-form'
 import Drawer from '../ui/Drawer'
 import Badge from '../ui/Badge'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Select from '../ui/Select'
+import Modal from '../ui/Modal'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import FormField from '../ui/FormField'
 import * as assetsApi from '../../api/assets'
 import * as assignmentsApi from '../../api/assignments'
 import * as usersApi from '../../api/users'
+import * as maintenanceApi from '../../api/maintenance'
 import { getApiError } from '../../lib/errors'
 import { toast as sonnerToast } from 'sonner'
 
@@ -66,6 +71,16 @@ export default function AssetDetailPanel({
     serial_number: asset.serial_number || '',
     status: asset.status,
   })
+
+  // --- Repair / Maintenance states ---
+  const [showRepairModal, setShowRepairModal] = useState(false)
+  const repairForm = useForm<{ title: string; category: string; description: string }>({
+    defaultValues: { title: '', category: 'repair', description: '' },
+  })
+
+  // --- Retire state ---
+  const [showRetireDialog, setShowRetireDialog] = useState(false)
+  const [retireReason, setRetireReason] = useState('')
 
   useEffect(() => {
     setForm({
@@ -155,6 +170,34 @@ export default function AssetDetailPanel({
     onError: (err) => {
       setError(getApiError(err))
     },
+  })
+
+  const repairMutation = useMutation({
+    mutationFn: (data: { title: string; category: string; description: string }) =>
+      maintenanceApi.create({
+        asset_id: asset.id,
+        title: data.title,
+        category: data.category,
+        description: data.description || undefined,
+      }),
+    onSuccess: () => {
+      sonnerToast.success('报修工单已创建')
+      setShowRepairModal(false)
+      repairForm.reset()
+    },
+    onError: (err) => sonnerToast.error(getApiError(err)),
+  })
+
+  const retireMutation = useMutation({
+    mutationFn: (reason: string) => assetsApi.retire(asset.id, reason),
+    onSuccess: () => {
+      sonnerToast.success('资产已报废')
+      setShowRetireDialog(false)
+      setRetireReason('')
+      onRefresh(asset.id)
+      queryClient.invalidateQueries({ queryKey: ['assets'] })
+    },
+    onError: (err) => sonnerToast.error(getApiError(err)),
   })
 
   const transitions = ALLOWED_TRANSITIONS[asset.lifecycle_state] || []
@@ -489,6 +532,110 @@ export default function AssetDetailPanel({
           </Button>
         )}
       </div>
+
+      {/* Maintenance Actions: Repair / Retire */}
+      {asset.lifecycle_state !== 'retirement' && (
+        <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+          <Button
+            variant="secondary"
+            style={{ flex: 1 }}
+            onClick={() => {
+              repairForm.reset()
+              setShowRepairModal(true)
+            }}
+          >
+            报修
+          </Button>
+          <Button
+            variant="danger"
+            style={{ flex: 1 }}
+            onClick={() => {
+              setRetireReason('')
+              setShowRetireDialog(true)
+            }}
+          >
+            报废
+          </Button>
+        </div>
+      )}
+
+      {/* Repair Modal */}
+      <Modal
+        open={showRepairModal}
+        onClose={() => setShowRepairModal(false)}
+        title="创建报修工单"
+        width="480px"
+      >
+        <form
+          onSubmit={repairForm.handleSubmit((data) => {
+            repairMutation.mutate(data)
+          })}
+        >
+          <Input
+            label="标题"
+            placeholder="例如：显示器花屏"
+            {...repairForm.register('title', { required: true })}
+          />
+          <Select
+            label="类别"
+            {...repairForm.register('category')}
+            options={[
+              { value: 'repair', label: '维修' },
+              { value: 'upkeep', label: '保养' },
+            ]}
+          />
+          <FormField label="描述">
+            <textarea
+              {...repairForm.register('description')}
+              rows={3}
+              placeholder="描述故障或保养详情..."
+              style={{
+                width: '100%',
+                padding: '7px 10px',
+                borderRadius: 5,
+                border: '1px solid var(--border-default)',
+                background: 'rgba(255,255,255,0.02)',
+                color: 'var(--text-primary)',
+                fontSize: 13,
+                outline: 'none',
+                fontFamily: 'inherit',
+                resize: 'vertical',
+              }}
+            />
+          </FormField>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 8 }}>
+            <Button
+              variant="secondary"
+              type="button"
+              onClick={() => setShowRepairModal(false)}
+            >
+              取消
+            </Button>
+            <Button type="submit" loading={repairMutation.isPending}>
+              提交报修
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Retire Confirm Dialog with reason input */}
+      <ConfirmDialog
+        open={showRetireDialog}
+        onClose={() => setShowRetireDialog(false)}
+        title="报废资产"
+        description="确认报废此资产吗？此操作不可逆，请填写报废原因。"
+        confirmLabel="确认报废"
+        danger
+        onConfirm={() => retireMutation.mutate(retireReason)}
+        loading={retireMutation.isPending}
+      >
+        <Input
+          label="报废原因"
+          value={retireReason}
+          onChange={(e) => setRetireReason(e.target.value)}
+          placeholder="请填写报废原因..."
+        />
+      </ConfirmDialog>
 
       {/* Meta info */}
       <div

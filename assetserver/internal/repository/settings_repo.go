@@ -103,6 +103,23 @@ func (r *SettingsRepo) NextBatchTags(ctx context.Context, q DBTX, orgID string, 
 	return tags, nil
 }
 
+// NextMaintenanceOrderNo 生成下一个维修工单编号 (scope='maintenance', 前缀 'MNT-')
+func (r *SettingsRepo) NextMaintenanceOrderNo(ctx context.Context, q DBTX, orgID string) (string, error) {
+	var endSeq int64
+	err := q.QueryRow(ctx,
+		`INSERT INTO assets.doc_sequences (org_id, scope, next_seq)
+		 VALUES ($1, 'maintenance', $2)
+		 ON CONFLICT (org_id, scope) DO UPDATE SET next_seq = assets.doc_sequences.next_seq + $2
+		 RETURNING next_seq`,
+		orgID, 1,
+	).Scan(&endSeq)
+	if err != nil {
+		return "", fmt.Errorf("claim maintenance sequence: %w", err)
+	}
+
+	return "MNT-" + padInt(int(endSeq), 4), nil
+}
+
 func formatTag(prefix string, seq int) string {
 	return prefix + padInt(seq, 4)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/handler"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/middleware"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,12 +27,15 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	dashRepo := repository.NewDashboardRepo()
 	userRepo := repository.NewUserRepo()
 	settingsRepo := repository.NewSettingsRepo()
+	maintenanceRepo := repository.NewMaintenanceRepo()
 
 	// 确保种子用户存在
 	_ = userRepo.EnsureSeedUsers(context.Background(), pool)
 
 	assetV2 := handler.NewAssetV2Handler(assetRepo, settingsRepo, pool)
 	assignmentH := handler.NewAssignmentHandler(assignmentRepo, pool)
+	maintenanceSvc := service.NewMaintenanceService(maintenanceRepo, assetRepo, assignmentRepo, settingsRepo)
+	maintenanceH := handler.NewMaintenanceHandler(maintenanceSvc, pool)
 
 	// === RBAC 分组 ===
 	// viewer+ (默认 — 所有已认证用户)
@@ -345,4 +349,16 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 		}
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{"new_password": randPwd}})
 	})
+
+	// ======== Phase F: 维修/保养工单 ========
+	// 工单 CRUD (manager+ 写, viewer+ 读)
+	manager.POST("/maintenance-orders", maintenanceH.CreateMaintenanceOrder)
+	viewer.GET("/maintenance-orders", maintenanceH.ListMaintenanceOrders)
+	viewer.GET("/maintenance-orders/:id", maintenanceH.GetMaintenanceOrder)
+	manager.POST("/maintenance-orders/:id/start", maintenanceH.StartMaintenanceOrder)
+	manager.POST("/maintenance-orders/:id/complete", maintenanceH.CompleteMaintenanceOrder)
+	manager.POST("/maintenance-orders/:id/cancel", maintenanceH.CancelMaintenanceOrder)
+
+	// 报废 (admin+)
+	admin.POST("/assets/:id/retire", maintenanceH.RetireAsset)
 }

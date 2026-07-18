@@ -115,6 +115,10 @@ export function borrow(id: string, data: BorrowAssetData): Promise<unknown> {
   return api.post(`/assets/${id}/borrow`, data).then((r) => r.data)
 }
 
+export function retire(id: string, reason: string): Promise<Asset> {
+  return api.post(`/assets/${id}/retire`, { reason }).then((r) => r.data)
+}
+
 export function batch(data: CreateAssetData, count: number): Promise<BatchResult> {
   return api.post('/assets/batch', { ...data, count }).then((r) => r.data)
 }

@@ -1,3 +1,4 @@
+import { ReactNode } from 'react'
 import Button from './Button'
 
 interface ConfirmDialogProps {
@@ -9,6 +10,7 @@ interface ConfirmDialogProps {
   onConfirm: () => void
   danger?: boolean
   loading?: boolean
+  children?: ReactNode
 }
 
 export default function ConfirmDialog({
@@ -20,6 +22,7 @@ export default function ConfirmDialog({
   onConfirm,
   danger = false,
   loading = false,
+  children,
 }: ConfirmDialogProps) {
   if (!open) return null
 
@@ -62,6 +65,7 @@ export default function ConfirmDialog({
         <p style={{ fontSize: 13, color: 'var(--text-tertiary)', margin: '0 0 20px', lineHeight: 1.5 }}>
           {description}
         </p>
+        {children && <div style={{ marginBottom: 20 }}>{children}</div>}
         <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           <Button variant="secondary" onClick={onClose} disabled={loading}>
             取消
