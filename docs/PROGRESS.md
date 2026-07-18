@@ -9,7 +9,7 @@
 
 | 阶段 | 内容 | 状态 | 完成时间 |
 |---|---|---|---|
-| 0 | 环境准备 + 规划落库 | 🔵 | |
+| 0 | 环境准备 + 规划落库 | ✅ | 2026-07-19 |
 | A | 止血：契约修复 + 可构建可部署 + CI | ⬜ | |
 | B | 数据层地基：goose 迁移/事务/审计/租户隔离 | ⬜ | |
 | C | 真实认证与 RBAC | ⬜ | |
@@ -25,9 +25,9 @@
 
 | 阶段 | 任务 | 状态 | 提交 hash | 验证方式与结果 | 时间 |
 |---|---|---|---|---|---|
-| 0 | 规划写入 docs/IMPLEMENTATION_PLAN.md + 本进度表落库 | 🔵 | | | 2026-07-19 |
-| 0 | 用户执行 docker 组授权（usermod + 重登录） | ⬜ | | `docker ps` 无 permission denied | |
-| 0 | 安装 Go → ~/.local/go | ⬜ | | `go version` | |
-| 0 | 安装 Node LTS → ~/.local/node | ⬜ | | `node --version` | |
-| 0 | 首次真实验证：`go build ./... && go test ./...` | ⬜ | | 编译+40 测试实跑结果 | |
-| 0 | 首次真实验证：`npm ci && npm run build` | ⬜ | | tsc + vite build 结果 | |
+| 0 | 规划写入 docs/IMPLEMENTATION_PLAN.md + 本进度表落库 | ✅ | 647089c | git commit 成功 | 2026-07-19 |
+| 0 | 用户执行 docker 组授权（usermod + 重登录） | ⚠️ | | docker ps 仍 permission denied（需重新登录/newgrp），不影响 Phase A 代码修改 | 2026-07-19 |
+| 0 | 安装 Go 1.25.0 → ~/.local/go | ✅ | | go version go1.25.0 linux/amd64 | 2026-07-19 |
+| 0 | 安装 Node 22.19.0 LTS → ~/.local/node | ✅ | | node v22.19.0 + npm 11.16.0 | 2026-07-19 |
+| 0 | 首次真实验证：`go build ./... && go test ./...` | ✅ | | 编译通过，全部 40 测试 PASS（lock/webhook 包 ok） | 2026-07-19 |
+| 0 | 首次真实验证：`npm ci && npm run build` | ✅ | | tsc 0 errors + vite build ✓（107 modules, 256KB gzip 82KB） | 2026-07-19 |
