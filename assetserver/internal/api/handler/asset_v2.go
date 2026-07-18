@@ -10,19 +10,26 @@ import (
 
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/domain"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // AssetV2Handler Phase 2 资产处理器 (集成真实 Repository)
 type AssetV2Handler struct {
 	repo         *repository.AssetRepo
 	settingsRepo *repository.SettingsRepo
-	pool         repository.DBTX
+	svc          *service.AssetService
+	pool         *pgxpool.Pool
 }
 
-func NewAssetV2Handler(repo *repository.AssetRepo, settingsRepo *repository.SettingsRepo, pool repository.DBTX) *AssetV2Handler {
-	return &AssetV2Handler{repo: repo, settingsRepo: settingsRepo, pool: pool}
+func NewAssetV2Handler(repo *repository.AssetRepo, settingsRepo *repository.SettingsRepo, pool *pgxpool.Pool) *AssetV2Handler {
+	return &AssetV2Handler{
+		repo:         repo,
+		settingsRepo: settingsRepo,
+		svc:          service.NewAssetService(repo, settingsRepo),
+		pool:         pool,
+	}
 }
 
 // AssetResponse 统一响应
@@ -41,6 +48,17 @@ type AssetResponse struct {
 	Version        int             `json:"version"`
 	CreatedAt      time.Time       `json:"created_at"`
 	UpdatedAt      time.Time       `json:"updated_at"`
+	// Phase E: 采购/折旧字段
+	PurchasePrice      *float64   `json:"purchase_price,omitempty"`
+	PurchaseDate       *time.Time `json:"purchase_date,omitempty"`
+	Supplier           *string    `json:"supplier,omitempty"`
+	WarrantyUntil      *time.Time `json:"warranty_until,omitempty"`
+	DepreciationMethod string     `json:"depreciation_method"`
+	UsefulLifeMonths   *int       `json:"useful_life_months,omitempty"`
+	SalvageValue       float64    `json:"salvage_value"`
+	ManagedBy          *string    `json:"managed_by,omitempty"`
+	RetiredAt          *time.Time `json:"retired_at,omitempty"`
+	RetireReason       *string    `json:"retire_reason,omitempty"`
 }
 
 func rowToResponse(r *repository.AssetRow) AssetResponse {
@@ -51,6 +69,17 @@ func rowToResponse(r *repository.AssetRow) AssetResponse {
 		LifecycleState: r.LifecycleState, Status: r.Status,
 		Properties: r.Properties, Version: r.Version,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+		// Phase E
+		PurchasePrice:      r.PurchasePrice,
+		PurchaseDate:       r.PurchaseDate,
+		Supplier:           r.Supplier,
+		WarrantyUntil:      r.WarrantyUntil,
+		DepreciationMethod: r.DepreciationMethod,
+		UsefulLifeMonths:   r.UsefulLifeMonths,
+		SalvageValue:       r.SalvageValue,
+		ManagedBy:          r.ManagedBy,
+		RetiredAt:          r.RetiredAt,
+		RetireReason:       r.RetireReason,
 	}
 }
 
@@ -113,38 +142,180 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 		Model          *string         `json:"model"`
 		LifecycleState string          `json:"lifecycle_state"`
 		Properties     json.RawMessage `json:"properties"`
+		// Phase E: 采购字段
+		PurchasePrice      *float64 `json:"purchase_price"`
+		PurchaseDate       *string  `json:"purchase_date"`
+		Supplier           *string  `json:"supplier"`
+		WarrantyUntil      *string  `json:"warranty_until"`
+		DepreciationMethod string   `json:"depreciation_method"`
+		UsefulLifeMonths   *int     `json:"useful_life_months"`
+		SalvageValue       *float64 `json:"salvage_value"`
+		ManagedBy          *string  `json:"managed_by"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// 自动生成编号
-	if input.AssetTag == "" && h.settingsRepo != nil {
-		orgID, _ := c.Get("org_id")
-		oid, _ := orgID.(string)
-		if oid == "" {
-			oid = "00000000-0000-4000-a000-000000000001"
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Parse date strings
+	var purchaseDate *time.Time
+	if input.PurchaseDate != nil && *input.PurchaseDate != "" {
+		parsed, err := time.Parse("2006-01-02", *input.PurchaseDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid purchase_date format, expected YYYY-MM-DD"})
+			return
 		}
-		tag, _ := h.settingsRepo.NextAssetTag(c.Request.Context(), h.pool, oid)
-		input.AssetTag = tag
+		purchaseDate = &parsed
+	}
+	var warrantyUntil *time.Time
+	if input.WarrantyUntil != nil && *input.WarrantyUntil != "" {
+		parsed, err := time.Parse("2006-01-02", *input.WarrantyUntil)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid warranty_until format, expected YYYY-MM-DD"})
+			return
+		}
+		warrantyUntil = &parsed
 	}
 
-	now := time.Now()
-	row := &repository.AssetRow{
-		ID: uuid.New().String(), AssetTag: input.AssetTag, Name: input.Name,
-		TypeID: input.TypeID, OrgID: c.GetString("org_id"),
-		SerialNumber: input.SerialNumber, Manufacturer: input.Manufacturer,
-		Model: input.Model, LifecycleState: "procurement", Status: "available",
-		Properties: input.Properties, Version: 1,
-		CreatedAt: now, UpdatedAt: now,
+	depreciationMethod := input.DepreciationMethod
+	if depreciationMethod == "" {
+		depreciationMethod = "none"
+	}
+	salvageValue := 0.0
+	if input.SalvageValue != nil {
+		salvageValue = *input.SalvageValue
 	}
 
-	if err := h.repo.Create(c.Request.Context(), h.pool, row); err != nil {
+	svcInput := service.CreateAssetInput{
+		Name:           input.Name,
+		TypeID:         input.TypeID,
+		OrgID:          orgID,
+		SerialNumber:   input.SerialNumber,
+		Manufacturer:   input.Manufacturer,
+		Model:          input.Model,
+		LifecycleState: input.LifecycleState,
+		Properties:     input.Properties,
+		ActorID:        userID,
+		// Phase E
+		PurchasePrice:      input.PurchasePrice,
+		PurchaseDate:       purchaseDate,
+		Supplier:           input.Supplier,
+		WarrantyUntil:      warrantyUntil,
+		DepreciationMethod: depreciationMethod,
+		UsefulLifeMonths:   input.UsefulLifeMonths,
+		SalvageValue:       salvageValue,
+		ManagedBy:          input.ManagedBy,
+	}
+
+	row, err := h.svc.CreateAsset(c.Request.Context(), h.pool, svcInput)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": rowToResponse(row)})
+}
+
+// CreateAssetBatch POST /api/v1/assets/batch
+// Phase E: 批量创建资产
+func (h *AssetV2Handler) CreateAssetBatch(c *gin.Context) {
+	var input struct {
+		Name           string          `json:"name" binding:"required"`
+		TypeID         string          `json:"type_id" binding:"required"`
+		Count          int             `json:"count" binding:"required"`
+		SerialNumber   *string         `json:"serial_number"`
+		Manufacturer   *string         `json:"manufacturer"`
+		Model          *string         `json:"model"`
+		LifecycleState string          `json:"lifecycle_state"`
+		Properties     json.RawMessage `json:"properties"`
+		// Phase E: 采购字段
+		PurchasePrice      *float64 `json:"purchase_price"`
+		PurchaseDate       *string  `json:"purchase_date"`
+		Supplier           *string  `json:"supplier"`
+		WarrantyUntil      *string  `json:"warranty_until"`
+		DepreciationMethod string   `json:"depreciation_method"`
+		UsefulLifeMonths   *int     `json:"useful_life_months"`
+		SalvageValue       *float64 `json:"salvage_value"`
+		ManagedBy          *string  `json:"managed_by"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if input.Count <= 0 || input.Count > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "count must be between 1 and 100"})
+		return
+	}
+
+	orgID := c.GetString("org_id")
+	userID := c.GetString("user_id")
+
+	// Parse date strings
+	var purchaseDate *time.Time
+	if input.PurchaseDate != nil && *input.PurchaseDate != "" {
+		parsed, err := time.Parse("2006-01-02", *input.PurchaseDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid purchase_date format"})
+			return
+		}
+		purchaseDate = &parsed
+	}
+	var warrantyUntil *time.Time
+	if input.WarrantyUntil != nil && *input.WarrantyUntil != "" {
+		parsed, err := time.Parse("2006-01-02", *input.WarrantyUntil)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid warranty_until format"})
+			return
+		}
+		warrantyUntil = &parsed
+	}
+
+	depreciationMethod := input.DepreciationMethod
+	if depreciationMethod == "" {
+		depreciationMethod = "none"
+	}
+	salvageValue := 0.0
+	if input.SalvageValue != nil {
+		salvageValue = *input.SalvageValue
+	}
+
+	svcInput := service.CreateAssetInput{
+		Name:           input.Name,
+		TypeID:         input.TypeID,
+		OrgID:          orgID,
+		SerialNumber:   input.SerialNumber,
+		Manufacturer:   input.Manufacturer,
+		Model:          input.Model,
+		LifecycleState: input.LifecycleState,
+		Properties:     input.Properties,
+		ActorID:        userID,
+		PurchasePrice:      input.PurchasePrice,
+		PurchaseDate:       purchaseDate,
+		Supplier:           input.Supplier,
+		WarrantyUntil:      warrantyUntil,
+		DepreciationMethod: depreciationMethod,
+		UsefulLifeMonths:   input.UsefulLifeMonths,
+		SalvageValue:       salvageValue,
+		ManagedBy:          input.ManagedBy,
+	}
+
+	assets, err := h.svc.CreateAssetBatch(c.Request.Context(), h.pool, svcInput, input.Count)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	data := make([]AssetResponse, len(assets))
+	for i, a := range assets {
+		data[i] = rowToResponse(a)
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"data":  gin.H{"assets": data, "count": len(data)},
+	})
 }
 
 // UpdateAsset PUT /api/v1/assets/:id (乐观锁)

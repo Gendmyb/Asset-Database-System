@@ -44,6 +44,7 @@ interface AssetDetailPanelProps {
   onClose: () => void
   onRefresh: (id: string) => void
   onAssign: (asset: assetsApi.Asset) => void
+  onBorrow: (asset: assetsApi.Asset) => void
   onRelease: (id: string) => void
 }
 
@@ -52,6 +53,7 @@ export default function AssetDetailPanel({
   onClose,
   onRefresh,
   onAssign,
+  onBorrow,
   onRelease,
 }: AssetDetailPanelProps) {
   const [editMode, setEditMode] = useState(false)
@@ -457,15 +459,24 @@ export default function AssetDetailPanel({
         )}
       </div>
 
-      {/* Actions: Assign / Release */}
+      {/* Actions: Assign / Borrow / Release */}
       <div style={{ marginTop: 24 }}>
         {asset.status === 'available' && (
-          <Button
-            onClick={() => onAssign(asset)}
-            style={{ width: '100%' }}
-          >
-            领用
-          </Button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Button
+              onClick={() => onAssign(asset)}
+              style={{ flex: 1 }}
+            >
+              领用
+            </Button>
+            <Button
+              onClick={() => onBorrow(asset)}
+              variant="secondary"
+              style={{ flex: 1 }}
+            >
+              借用
+            </Button>
+          </div>
         )}
         {asset.status === 'assigned' && (
           <Button

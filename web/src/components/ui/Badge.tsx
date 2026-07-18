@@ -7,15 +7,42 @@ const statusMap: Record<string, { bg: string; color: string; label: string }> = 
   broken: { bg: 'rgba(239,68,68,0.1)', color: '#f87171', label: '已损坏' },
 }
 
-interface BadgeProps {
-  status: string
+const assignmentMap: Record<string, { bg: string; color: string; label: string }> = {
+  permanent: { bg: 'rgba(94,106,210,0.1)', color: '#818cf8', label: '领用' },
+  temporary: { bg: 'rgba(168,85,247,0.1)', color: '#c084fc', label: '借用' },
 }
 
-export default function Badge({ status }: BadgeProps) {
-  const s = statusMap[status] || {
+interface BadgeProps {
+  status?: string
+  type?: 'status' | 'assignment'
+}
+
+export default function Badge({ status, type = 'status' }: BadgeProps) {
+  if (type === 'assignment') {
+    const a = assignmentMap[status || ''] || {
+      bg: 'rgba(255,255,255,0.05)',
+      color: 'var(--text-tertiary)',
+      label: status || '—',
+    }
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+        <span
+          style={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: a.color,
+          }}
+        />
+        <span style={{ color: a.color, fontWeight: 500 }}>{a.label}</span>
+      </span>
+    )
+  }
+
+  const s = statusMap[status || ''] || {
     bg: 'rgba(255,255,255,0.05)',
     color: 'var(--text-tertiary)',
-    label: status,
+    label: status || '—',
   }
 
   return (

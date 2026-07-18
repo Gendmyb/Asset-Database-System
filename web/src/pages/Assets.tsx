@@ -68,6 +68,12 @@ export default function Assets() {
     setShowAssign(true)
   }
 
+  const handleBorrow = (asset: assetsApi.Asset) => {
+    setAssignAsset(asset)
+    setAssignMode('borrow')
+    setShowAssign(true)
+  }
+
   return (
     <div style={{ padding: 32, maxWidth: 1400 }}>
       {/* Header */}
@@ -118,6 +124,7 @@ export default function Assets() {
           onClose={() => setSelected(null)}
           onRefresh={handleRefresh}
           onAssign={handleAssign}
+          onBorrow={handleBorrow}
           onRelease={async (id) => {
             try {
               await assetsApi.release(id)

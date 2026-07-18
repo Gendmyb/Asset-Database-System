@@ -73,5 +73,6 @@ const (
 	ActionAssigned    = "assigned"
 	ActionReleased    = "released"
 	ActionTransferred = "transferred"
+	ActionBorrowed    = "borrowed"
 	ActionTransition  = "lifecycle_changed"
 )

@@ -30,6 +30,17 @@ type AssetRow struct {
 	DeletedAt      *time.Time
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// Phase E: 采购/折旧/报废字段
+	PurchasePrice      *float64
+	PurchaseDate       *time.Time
+	Supplier           *string
+	WarrantyUntil      *time.Time
+	DepreciationMethod string
+	UsefulLifeMonths   *int
+	SalvageValue       float64
+	ManagedBy          *string
+	RetiredAt          *time.Time
+	RetireReason       *string
 }
 
 // AssetRepo 资产仓库 (无状态 — DBTX 由调用方传入)
@@ -58,7 +69,9 @@ func (r *AssetRepo) List(ctx context.Context, q DBTX, f AssetFilter) ([]AssetRow
 	}
 
 	query := `SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
-		lifecycle_state, status, properties, version, deleted_at, created_at, updated_at
+		lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
+		purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
+		useful_life_months, salvage_value, managed_by, retired_at, retire_reason
 		FROM assets.assets WHERE deleted_at IS NULL AND org_id = $1`
 	args := []interface{}{f.OrgID}
 	argIdx := 2
@@ -124,7 +137,10 @@ func (r *AssetRepo) List(ctx context.Context, q DBTX, f AssetFilter) ([]AssetRow
 		if err := rows.Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 			&a.SerialNumber, &a.Manufacturer, &a.Model,
 			&a.LifecycleState, &a.Status, &a.Properties,
-			&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
+			&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
+			&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
+			&a.ManagedBy, &a.RetiredAt, &a.RetireReason); err != nil {
 			return nil, "", false, fmt.Errorf("scan asset: %w", err)
 		}
 		assets = append(assets, a)
@@ -163,12 +179,17 @@ func (r *AssetRepo) GetByID(ctx context.Context, q DBTX, id string, orgID string
 	var a AssetRow
 	err := q.QueryRow(ctx,
 		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
-		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at
+		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
+		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason
 		 FROM assets.assets WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`, id, orgID,
 	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 		&a.SerialNumber, &a.Manufacturer, &a.Model,
 		&a.LifecycleState, &a.Status, &a.Properties,
-		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt)
+		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
+		&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
+		&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
+		&a.ManagedBy, &a.RetiredAt, &a.RetireReason)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("asset not found")
 	}
@@ -182,11 +203,15 @@ func (r *AssetRepo) GetByID(ctx context.Context, q DBTX, id string, orgID string
 func (r *AssetRepo) Create(ctx context.Context, q DBTX, a *AssetRow) error {
 	_, err := q.Exec(ctx,
 		`INSERT INTO assets.assets (id, asset_tag, name, type_id, org_id, serial_number,
-		 manufacturer, model, lifecycle_state, status, properties, version, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		 manufacturer, model, lifecycle_state, status, properties, version, created_at, updated_at,
+		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
+		 useful_life_months, salvage_value, managed_by)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
 		a.ID, a.AssetTag, a.Name, a.TypeID, a.OrgID,
 		a.SerialNumber, a.Manufacturer, a.Model,
 		a.LifecycleState, a.Status, a.Properties, a.Version, a.CreatedAt, a.UpdatedAt,
+		a.PurchasePrice, a.PurchaseDate, a.Supplier, a.WarrantyUntil,
+		a.DepreciationMethod, a.UsefulLifeMonths, a.SalvageValue, a.ManagedBy,
 	)
 	return err
 }
@@ -257,12 +282,17 @@ func (r *AssetRepo) LockForUpdate(ctx context.Context, q DBTX, id string, orgID 
 	var a AssetRow
 	err := q.QueryRow(ctx,
 		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
-		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at
+		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
+		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason
 		 FROM assets.assets WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`, id, orgID,
 	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 		&a.SerialNumber, &a.Manufacturer, &a.Model,
 		&a.LifecycleState, &a.Status, &a.Properties,
-		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt)
+		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
+		&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
+		&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
+		&a.ManagedBy, &a.RetiredAt, &a.RetireReason)
 	if err != nil {
 		return nil, fmt.Errorf("lock asset: %w", err)
 	}

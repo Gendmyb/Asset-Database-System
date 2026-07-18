@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -71,6 +72,35 @@ func (r *SettingsRepo) NextAssetTag(ctx context.Context, q DBTX, orgID string) (
 	}
 
 	return formatTag(prefix, int(count+1)), nil
+}
+
+// NextBatchTags 批量生成资产编号 (使用 doc_sequences 原子取号)
+// Phase E: 防止批量创建时的并发重号问题
+func (r *SettingsRepo) NextBatchTags(ctx context.Context, q DBTX, orgID string, count int) ([]string, error) {
+	prefix, err := r.Get(ctx, q, "asset_tag_prefix")
+	if err != nil || prefix == "" {
+		prefix = "AST-"
+	}
+
+	// 原子取号: UPDATE doc_sequences SET next_seq = next_seq + $2 RETURNING next_seq
+	var endSeq int64
+	err = q.QueryRow(ctx,
+		`INSERT INTO assets.doc_sequences (org_id, scope, next_seq)
+		 VALUES ($1, 'asset', $2)
+		 ON CONFLICT (org_id, scope) DO UPDATE SET next_seq = assets.doc_sequences.next_seq + $2
+		 RETURNING next_seq`,
+		orgID, count,
+	).Scan(&endSeq)
+	if err != nil {
+		return nil, fmt.Errorf("claim sequence: %w", err)
+	}
+
+	startSeq := endSeq - int64(count) + 1
+	tags := make([]string, count)
+	for i := 0; i < count; i++ {
+		tags[i] = formatTag(prefix, int(startSeq)+i)
+	}
+	return tags, nil
 }
 
 func formatTag(prefix string, seq int) string {

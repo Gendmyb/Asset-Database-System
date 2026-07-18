@@ -44,10 +44,13 @@ export interface CreateAssetData {
   asset_tag?: string
   managed_by?: string
   location_id?: string
-  price?: number
+  purchase_price?: number
   purchase_date?: string
   supplier?: string
-  warranty_expiry?: string
+  warranty_until?: string
+  depreciation_method?: string
+  useful_life_months?: number
+  salvage?: number
 }
 
 export interface UpdateAssetData {
@@ -69,10 +72,9 @@ export interface BorrowAssetData {
   due_date: string
 }
 
-export interface BatchData {
-  asset_ids: string[]
-  action: 'assign' | 'transition' | 'delete'
-  params?: Record<string, unknown>
+export interface BatchResult {
+  assets: Asset[]
+  count: number
 }
 
 export function list(params?: AssetListParams): Promise<PaginatedResponse<Asset>> {
@@ -113,6 +115,6 @@ export function borrow(id: string, data: BorrowAssetData): Promise<unknown> {
   return api.post(`/assets/${id}/borrow`, data).then((r) => r.data)
 }
 
-export function batch(data: BatchData): Promise<unknown> {
-  return api.post('/assets/batch', data).then((r) => r.data)
+export function batch(data: CreateAssetData, count: number): Promise<BatchResult> {
+  return api.post('/assets/batch', { ...data, count }).then((r) => r.data)
 }

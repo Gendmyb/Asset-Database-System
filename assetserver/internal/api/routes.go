@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/handler"
@@ -110,6 +111,7 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	viewer.GET("/assets", assetV2.ListAssets)
 	viewer.GET("/assets/:id", assetV2.GetAsset)
 	manager.POST("/assets", assetV2.CreateAsset)
+	manager.POST("/assets/batch", assetV2.CreateAssetBatch)
 	manager.PUT("/assets/:id", assetV2.UpdateAsset)
 	manager.DELETE("/assets/:id", assetV2.DeleteAsset)
 	manager.POST("/assets/:id/transition", assetV2.LifecycleTransition)
@@ -123,8 +125,78 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	manager.POST("/assets/:id/assign", assignmentH.Assign)
 	manager.POST("/assets/:id/release", assignmentH.Release)
 	manager.POST("/assets/:id/transfer", assignmentH.Transfer)
+	manager.POST("/assets/:id/borrow", assignmentH.Borrow)
 
 	// 领用查询 (viewer+)
+	// 领用查询 (viewer+)
+	viewer.GET("/assignments", func(c *gin.Context) {
+		var limit int
+		if l, err := strconv.Atoi(c.DefaultQuery("limit", "50")); err == nil {
+			limit = l
+		} else {
+			limit = 50
+		}
+		if limit > 200 {
+			limit = 200
+		}
+		overdue, _ := strconv.ParseBool(c.Query("overdue"))
+
+		f := repository.AssignmentFilter{
+			OrgID:      c.GetString("org_id"),
+			Status:     c.Query("status"),
+			Type:       c.Query("type"),
+			AssignedTo: c.Query("assigned_to"),
+			Overdue:    overdue,
+			Cursor:     c.Query("cursor"),
+			Limit:      limit,
+		}
+
+		rows, nextCursor, hasMore, err := assignmentRepo.ListAssignments(c.Request.Context(), pool, f)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"data": rows,
+			"pagination": gin.H{
+				"next_cursor": nextCursor,
+				"has_more":    hasMore,
+			},
+		})
+	})
+
+	viewer.GET("/users/:id/assignments", func(c *gin.Context) {
+		var limit int
+		if l, err := strconv.Atoi(c.DefaultQuery("limit", "50")); err == nil {
+			limit = l
+		} else {
+			limit = 50
+		}
+		if limit > 200 {
+			limit = 200
+		}
+
+		f := repository.AssignmentFilter{
+			OrgID:      c.GetString("org_id"),
+			AssignedTo: c.Param("id"),
+			Cursor:     c.Query("cursor"),
+			Limit:      limit,
+		}
+
+		rows, nextCursor, hasMore, err := assignmentRepo.ListAssignments(c.Request.Context(), pool, f)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"data": rows,
+			"pagination": gin.H{
+				"next_cursor": nextCursor,
+				"has_more":    hasMore,
+			},
+		})
+	})
+
 	viewer.GET("/assets/:id/assignments", func(c *gin.Context) {
 		a, err := assignmentRepo.GetActiveAssignment(c.Request.Context(), pool, c.Param("id"))
 		if err != nil {

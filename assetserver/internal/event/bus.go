@@ -16,6 +16,7 @@ const (
 	EventAssetAssigned    = "asset.assigned"
 	EventAssetReleased    = "asset.released"
 	EventAssetTransferred = "asset.transferred"
+	EventAssetBorrowed    = "asset.borrowed"
 	EventLifecycleChanged = "asset.lifecycle_changed"
 	EventAgentRegistered  = "agent.registered"
 	EventAgentOnline      = "agent.online"

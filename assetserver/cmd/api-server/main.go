@@ -37,6 +37,7 @@ func main() {
 	eventTypes := []string{
 		event.EventAssetCreated, event.EventAssetUpdated, event.EventAssetDeleted,
 		event.EventAssetAssigned, event.EventAssetReleased, event.EventAssetTransferred,
+		event.EventAssetBorrowed,
 		event.EventLifecycleChanged,
 	}
 	for _, et := range eventTypes {

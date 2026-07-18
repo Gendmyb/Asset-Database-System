@@ -6,16 +6,23 @@ export interface Assignment {
   assigned_by: string
   assigned_to: string
   org_id: string
+  assignment_type?: 'permanent' | 'temporary'
+  status?: string
   notes?: string
   due_date?: string
   returned_at?: string
   created_at: string
+  asset_name?: string
+  asset_tag?: string
+  assigned_to_name?: string
 }
 
 export interface AssignmentListParams {
   asset_id?: string
   assigned_to?: string
   status?: string
+  type?: 'permanent' | 'temporary'
+  overdue?: boolean
   cursor?: string
   limit?: number
 }
