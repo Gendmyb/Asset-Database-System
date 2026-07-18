@@ -10,8 +10,8 @@
 | 阶段 | 内容 | 状态 | 完成时间 |
 |---|---|---|---|
 | 0 | 环境准备 + 规划落库 | ✅ | 2026-07-19 |
-| A | 止血：契约修复 + 可构建可部署 + CI | 🔵 | |
-| B | 数据层地基：goose 迁移/事务/审计/租户隔离 | ⬜ | |
+| A | 止血：契约修复 + 可构建可部署 + CI | ✅ | 2026-07-19 |
+| B | 数据层地基：goose 迁移/事务/审计/租户隔离 | 🔵 | |
 | C | 真实认证与 RBAC | ⬜ | |
 | D | 前端基建重构 + 管理页 | ⬜ | |
 | E | 入库增强 + 领用/借用/归还闭环 | ⬜ | |
@@ -40,3 +40,8 @@
 | A | 前端：新增 404 兜底路由 NotFound 页 | ✅ | | `path="*"` catch-all | 2026-07-19 |
 | A | 前端：模式徽标真实化（fetch /healthz 读 mode） | ✅ | | demo 时才显示绿点"演示模式" | 2026-07-19 |
 | A | 前端：tsc --noEmit 通过 | ✅ | | 0 type errors | 2026-07-19 |
+| A | 后端：种子 SQL bug `'$4'`→`$4` + next-tag nil check + If-Match Trim + DEMO 分页/transfer | ✅ | | 全部修完，go build 通过 | 2026-07-19 |
+| A | 后端：002 迁移（system_settings + doc_sequences） | ✅ | | 新建 | 2026-07-19 |
+| A | 后端：死代码删除（cache/ingest/agent/collection-agent/nginx/grafana） | ✅ | | 2,729 行死代码删除 | 2026-07-19 |
+| A | 部署：Dockerfile 三阶段（node→go→alpine）+ webfs embed | ✅ | | 仓库根 Dockerfile，context=./ | 2026-07-19 |
+| A | 部署：docker-compose 精简（仅 pg+app）+ .github/ci.yml | ✅ | | 删 redis/grafana，3-job CI | 2026-07-19 |
