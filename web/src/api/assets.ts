@@ -122,3 +122,48 @@ export function retire(id: string, reason: string): Promise<Asset> {
 export function batch(data: CreateAssetData, count: number): Promise<BatchResult> {
   return api.post('/assets/batch', { ...data, count }).then((r) => r.data)
 }
+
+// ---------- Export / Import ----------
+
+export interface ImportPreviewError {
+  row: number
+  field: string
+  message: string
+}
+
+export interface ImportPreview {
+  errors: ImportPreviewError[]
+  valid_count: number
+  total_count: number
+}
+
+export function exportAssets(
+  params?: AssetListParams & { format?: string },
+  format = 'csv'
+): Promise<Blob> {
+  return api
+    .get('/assets/export', { params: { ...params, format }, responseType: 'blob' })
+    .then((r) => r.data)
+}
+
+export function importTemplate(): Promise<Blob> {
+  return api
+    .get('/assets/import/template', { responseType: 'blob' })
+    .then((r) => r.data)
+}
+
+export function previewImport(formData: FormData): Promise<ImportPreview> {
+  return api
+    .post('/assets/import?dry_run=true', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data?.data || r.data)
+}
+
+export function executeImport(formData: FormData): Promise<{ imported: number; errors: ImportPreviewError[] }> {
+  return api
+    .post('/assets/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data?.data || r.data)
+}

@@ -40,6 +40,14 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	stocktakeSvc := service.NewStocktakeService(stocktakeRepo, assetRepo, settingsRepo)
 	stocktakeH := handler.NewStocktakeHandler(stocktakeSvc, pool)
 
+	// Phase H: 报表/导出/导入
+	reportSvc := service.NewReportService()
+	depSvc := service.NewDepreciationService()
+	exportSvc := service.NewExportService()
+	reportH := handler.NewReportHandler(reportSvc, depSvc, exportSvc, pool)
+	importSvc := service.NewImportService(settingsRepo, assetRepo)
+	importH := handler.NewImportHandler(importSvc, pool)
+
 	// === RBAC 分组 ===
 	// viewer+ (默认 — 所有已认证用户)
 	viewer := v1.Group("")
@@ -374,4 +382,19 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	manager.POST("/stocktakes/:id/items", stocktakeH.AddSurplusItem)
 	admin.POST("/stocktakes/:id/complete", stocktakeH.CompletePlan)
 	viewer.GET("/stocktakes/:id/report", stocktakeH.GetPlanReport)
+	admin.GET("/stocktakes/:id/report/export", reportH.ExportStocktakeReport)
+
+	// ======== Phase H: 报表 (viewer+) ========
+	viewer.GET("/reports/summary", reportH.GetSummary)
+	viewer.GET("/reports/depreciation", reportH.GetDepreciation)
+	viewer.GET("/reports/maintenance-cost", reportH.GetMaintenanceCost)
+	viewer.GET("/reports/assignments-due", reportH.GetAssignmentsDue)
+
+	// ======== Phase H: CSV 导出 (admin+) ========
+	admin.GET("/assets/export", reportH.ExportAssets)
+	admin.GET("/reports/depreciation/export", reportH.ExportDepreciation)
+
+	// ======== Phase H: CSV 导入 ========
+	manager.GET("/assets/import/template", importH.GetTemplate)
+	manager.POST("/assets/import", importH.ImportAssets)
 }

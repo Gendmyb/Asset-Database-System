@@ -62,6 +62,10 @@ export default function Dashboard() {
 
   // KPI data
   const totalAssets = Number(s?.total_assets || 0)
+  const totalPurchasePrice = Number(s?.total_purchase_price || 0)
+  const totalDepreciation = Number(s?.total_depreciation || 0)
+  const netValue = totalPurchasePrice - totalDepreciation
+  const recentAdditions = Number(s?.recent_additions || 0)
   const availableCount = s?.by_status
     ? (s.by_status as Record<string, number>).available || 0
     : 0
@@ -88,10 +92,16 @@ export default function Dashboard() {
       ) : (
         <>
           {/* KPI Cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 32 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16, marginBottom: 16 }}>
             <KpiCard label="资产总数" value={String(totalAssets)} color="var(--brand)" />
+            <KpiCard label="资产原值" value={`¥${totalPurchasePrice.toLocaleString()}`} color="#7170ff" />
+            <KpiCard label="净值" value={`¥${netValue.toLocaleString()}`} color="#4ade80" />
             <KpiCard label="维护中" value={String(maintenanceCount)} color="var(--warning)" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 16, marginBottom: 32 }}>
             <KpiCard label="可用率" value={`${availableRate}%`} color="#7170ff" />
+            <KpiCard label="累计折旧" value={`¥${totalDepreciation.toLocaleString()}`} color="var(--warning)" />
+            <KpiCard label="近30天新增" value={`${recentAdditions} 件`} color="#38bdf8" />
           </div>
 
           {/* Charts Row 1: Pie + Bar */}

@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import AssetTable from '../components/assets/AssetTable'
 import AssetDetailPanel from '../components/assets/AssetDetailPanel'
 import CreateAssetModal from '../components/assets/CreateAssetModal'
+import ImportWizard from '../components/assets/ImportWizard'
 import AssignDialog from '../components/assets/AssignDialog'
 import Button from '../components/ui/Button'
 import * as assetsApi from '../api/assets'
@@ -18,6 +19,7 @@ export default function Assets() {
   const [manufacturerFilter, setManufacturerFilter] = useState('')
   const [selected, setSelected] = useState<assetsApi.Asset | null>(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [showAssign, setShowAssign] = useState(false)
   const [assignMode, setAssignMode] = useState<'assign' | 'borrow'>('assign')
   const [assignAsset, setAssignAsset] = useState<assetsApi.Asset | null>(null)
@@ -101,7 +103,10 @@ export default function Assets() {
             Manage and track all IT assets
           </p>
         </div>
-        <Button onClick={() => setShowCreate(true)}>+ 新建资产</Button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button variant="secondary" onClick={() => setShowImport(true)}>导入</Button>
+          <Button onClick={() => setShowCreate(true)}>+ 新建资产</Button>
+        </div>
       </div>
 
       {/* Asset Table */}
@@ -145,6 +150,9 @@ export default function Assets() {
         locationOptions={locationOptions}
         typeOptions={typeOptions}
       />
+
+      {/* Import Wizard */}
+      <ImportWizard open={showImport} onClose={() => setShowImport(false)} />
 
       {/* Assign/Borrow Dialog */}
       {assignAsset && (
