@@ -146,6 +146,13 @@ export function exportAssets(
     .then((r) => r.data)
 }
 
+// Wave 1 G5: Excel (xlsx) 导出 — 与 CSV 同列、同过滤参数
+export function exportAssetsXlsx(params?: AssetListParams): Promise<Blob> {
+  return api
+    .get('/reports/assets.xlsx', { params, responseType: 'blob' })
+    .then((r) => r.data)
+}
+
 export function importTemplate(): Promise<Blob> {
   return api
     .get('/assets/import/template', { responseType: 'blob' })

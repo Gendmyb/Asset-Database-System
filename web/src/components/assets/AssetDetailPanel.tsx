@@ -13,6 +13,7 @@ import * as assetsApi from '../../api/assets'
 import * as assignmentsApi from '../../api/assignments'
 import * as usersApi from '../../api/users'
 import * as maintenanceApi from '../../api/maintenance'
+import apiClient from '../../api/client'
 import { getApiError } from '../../lib/errors'
 import { toast as sonnerToast } from 'sonner'
 import { useAuthStore } from '../../store/authStore'
@@ -84,6 +85,10 @@ export default function AssetDetailPanel({
   // --- Retire state ---
   const [showRetireDialog, setShowRetireDialog] = useState(false)
   const [retireReason, setRetireReason] = useState('')
+
+  // --- G3: QR code state ---
+  const [showQRModal, setShowQRModal] = useState(false)
+  const [qrUrl, setQrUrl] = useState('')
 
   useEffect(() => {
     setForm({
@@ -381,16 +386,38 @@ export default function AssetDetailPanel({
             </div>
           ))}
 
-          <div style={{ marginTop: 12 }}>
+          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
             {canManage && (
               <Button
                 variant="secondary"
                 onClick={() => setEditMode(true)}
-                style={{ width: '100%' }}
+                style={{ flex: 1 }}
               >
                 编辑
               </Button>
             )}
+            {/* G3: 显示资产二维码 */}
+            <Button
+              variant="secondary"
+              onClick={async () => {
+                try {
+                  // 端点需 JWT, 用已认证客户端取 blob 再转 object URL
+                  // 路径参数名义 :id 实为 asset_tag (后端按 tag 查询)
+                  const resp = await apiClient.get(
+                    `/assets/${encodeURIComponent(asset.asset_tag)}/qrcode`,
+                    { responseType: 'blob' },
+                  )
+                  if (qrUrl) URL.revokeObjectURL(qrUrl)
+                  setQrUrl(URL.createObjectURL(resp.data))
+                  setShowQRModal(true)
+                } catch (err) {
+                  sonnerToast.error(getApiError(err))
+                }
+              }}
+              style={{ flex: 1 }}
+            >
+              二维码
+            </Button>
           </div>
         </>
       )}
@@ -708,6 +735,47 @@ export default function AssetDetailPanel({
           </span>
         </div>
       </div>
+
+      {/* G3: 资产二维码弹窗 */}
+      <Modal
+        open={showQRModal}
+        onClose={() => {
+          setShowQRModal(false)
+          if (qrUrl) {
+            URL.revokeObjectURL(qrUrl)
+            setQrUrl('')
+          }
+        }}
+        title="资产二维码"
+        width="360px"
+      >
+        <div style={{ textAlign: 'center' }}>
+          {qrUrl ? (
+            <img
+              src={qrUrl}
+              alt={`QR ${asset.asset_tag}`}
+              style={{ width: 256, height: 256, margin: '0 auto', display: 'block' }}
+            />
+          ) : (
+            <div style={{ padding: 32, color: 'var(--text-tertiary)' }}>
+              加载中...
+            </div>
+          )}
+          <div
+            style={{
+              marginTop: 12,
+              fontFamily: 'JetBrains Mono, monospace',
+              fontSize: 13,
+              color: 'var(--text-secondary)',
+            }}
+          >
+            {asset.asset_tag}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--text-quaternary)', marginTop: 4 }}>
+            扫码可快速定位资产 (内容为资产编号)
+          </div>
+        </div>
+      </Modal>
     </Drawer>
   )
 }

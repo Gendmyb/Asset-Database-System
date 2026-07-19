@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -17,11 +18,28 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+// LDAPAuthenticator LDAP 登录接口 (由 internal/auth/ldap.AuthService 实现)
+// 抽象出来便于单测 mock, 也避免本包循环依赖 ldap 包。
+type LDAPAuthenticator interface {
+	Authenticate(ctx context.Context, username, password string) (*LDAPAuthResult, error)
+	EnsureUserRow(ctx context.Context, r *LDAPAuthResult, defaultOrgID string) (userID, role, orgID string, err error)
+}
+
+// LDAPAuthResult LDAP 校验结果 (与 ldap.AuthenticateResult 同形, 解耦复制)
+type LDAPAuthResult struct {
+	Valid       bool
+	Username    string
+	DisplayName string
+	Email       string
+	DN          string
+}
+
 // AuthService 认证服务
 type AuthService struct {
 	pool     *pgxpool.Pool
 	km       *crypto.KeyManager
 	failures *loginFailures
+	ldap     LDAPAuthenticator // 可空: 未配置 LDAP 时为 nil
 }
 
 // loginFailures 内存限速 (per-username 失败计数)
@@ -44,6 +62,11 @@ func NewAuthService(pool *pgxpool.Pool, km *crypto.KeyManager) *AuthService {
 			attempts: make(map[string]*failEntry),
 		},
 	}
+}
+
+// SetLDAPAuthenticator 注入 LDAP 认证器 (可选; 启用 LDAP 时调用)
+func (s *AuthService) SetLDAPAuthenticator(l LDAPAuthenticator) {
+	s.ldap = l
 }
 
 // maxFailures 触发锁定的连续失败次数
@@ -108,6 +131,18 @@ type UserInfo struct {
 }
 
 // Login 用户登录
+//
+// 登录策略 (本地优先 + LDAP 兜底):
+//  1. 限速检查
+//  2. 查询本系统 users 表; 若存在 source='local' 用户则用 bcrypt 校验密码。
+//     本地优先确保 AD 故障时管理员仍可登录, 同时防止 AD 影子账号覆盖本地 admin。
+//  3. 本地用户不存在 / 密码不匹配 / 用户为 LDAP 类型, 且 LDAP 已启用:
+//     尝试用 (username, password) 做 LDAP bind; 成功则 upsert 用户行并签发 JWT。
+//  4. AD 与本地均失败 -> 返回统一错误 (不暴露用户是否存在)。
+//
+// 安全: 凭据校验通过前不区分 "用户不存在" / "账号已禁用", 统一返回 "用户名或密码错误";
+// 仅在密码校验通过后才返回 "账号已禁用", 避免禁用账号信息泄漏。
+// 密码绝不入日志/审计。
 func (s *AuthService) Login(ctx context.Context, username, password string) (*LoginResult, error) {
 	// 1. 限速检查
 	if err := s.failures.checkRateLimit(username); err != nil {
@@ -122,40 +157,87 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*Lo
 		email        string
 		passwordHash string
 		status       string
+		source       string
 	)
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, role, org_id, COALESCE(email,''), password_hash, status
+		`SELECT id, role, org_id, COALESCE(email,''), password_hash, status, source
 		 FROM assets.users WHERE username = $1 AND deleted_at IS NULL`, username,
-	).Scan(&userID, &role, &orgID, &email, &passwordHash, &status)
+	).Scan(&userID, &role, &orgID, &email, &passwordHash, &status, &source)
+
+	// 凭据校验: 先校验密码, 通过后再检查 status (避免禁用账号信息泄漏)
+	localMatched := false
+	if err == nil {
+		// 仅本地用户参与 bcrypt 校验 (LDAP 用户密码_hash 为占位符)
+		if source == "local" {
+			if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) == nil {
+				localMatched = true
+			}
+		}
+	}
+
+	// 3. 本地密码匹配 -> 校验 status 后签发
+	if localMatched {
+		if status != "active" {
+			// 密码已通过, 此时可安全返回禁用状态
+			return nil, fmt.Errorf("账号已禁用")
+		}
+		s.failures.resetFailures(username)
+		return s.finishLogin(ctx, userID, username, role, orgID, email)
+	}
+
+	// 4. LDAP 兜底 (仅在已配置 LDAP 时)
+	if s.ldap != nil {
+		r, err := s.ldap.Authenticate(ctx, username, password)
+		if err == nil && r != nil && r.Valid {
+			// LDAP bind 校验通过; 检查本地是否已存在该用户且被禁用
+			// (LDAP 用户行可能在历史同步中被标记 disabled)
+			if existingStatus, ok := s.lookupLocalStatus(ctx, username); ok && existingStatus != "active" {
+				return nil, fmt.Errorf("账号已禁用")
+			}
+			// upsert 本系统用户行
+			defaultOrg := "00000000-0000-4000-a000-000000000001"
+			uid, uRole, uOrgID, err := s.ldap.EnsureUserRow(ctx, r, defaultOrg)
+			if err != nil {
+				slog.Warn("ldap ensure user row failed",
+					"username", username, "err", err)
+				return nil, fmt.Errorf("用户名或密码错误")
+			}
+			s.failures.resetFailures(username)
+			return s.finishLogin(ctx, uid, username, uRole, uOrgID, r.Email)
+		}
+		// LDAP 失败: 落到统一错误
+		slog.Info("ldap auth failed", "username", username)
+	}
+
+	// 5. 全部失败 — 统一错误, 不区分用户是否存在
+	return nil, fmt.Errorf("用户名或密码错误")
+}
+
+// lookupLocalStatus 查询本地 users 表中 username 的 status (仅 LDAP 兜底通过 bind 后使用)。
+// 返回 (status, true) 表示行存在; (false) 表示行不存在。
+// 不区分软删除行 (软删除视为不存在, 允许 LDAP 重新 upsert)。
+func (s *AuthService) lookupLocalStatus(ctx context.Context, username string) (string, bool) {
+	var status string
+	err := s.pool.QueryRow(ctx,
+		`SELECT status FROM assets.users
+		 WHERE username = $1 AND source = 'ldap' AND deleted_at IS NULL`, username,
+	).Scan(&status)
 	if err != nil {
-		return nil, fmt.Errorf("用户名或密码错误")
+		return "", false
 	}
+	return status, true
+}
 
-	if status != "active" {
-		return nil, fmt.Errorf("帐户已被禁用")
-	}
-
-	// 3. bcrypt 比对
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
-		return nil, fmt.Errorf("用户名或密码错误")
-	}
-
-	// 成功 → 重置失败计数
-	s.failures.resetFailures(username)
-
-	// 4. 签发 access token (15min)
+// finishLogin 签发 access/refresh token, 更新 last_login_at
+func (s *AuthService) finishLogin(ctx context.Context, userID, username, role, orgID, email string) (*LoginResult, error) {
 	accessToken, err := s.km.IssueAccessToken(ctx, userID, role, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("签发 token 失败: %w", err)
 	}
-
-	// 5. 生成 refresh token
 	refreshToken, _, err := s.storeRefreshToken(ctx, userID, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("生成 refresh token 失败: %w", err)
 	}
-
-	// 6. 更新 last_login_at
 	_, _ = s.pool.Exec(ctx,
 		`UPDATE assets.users SET last_login_at = now() WHERE id = $1`, userID)
 

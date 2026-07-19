@@ -321,3 +321,48 @@ func decodeAssignmentCursor(c string) (*assignmentCursorData, error) {
 	}
 	return &d, nil
 }
+
+// OverdueAssignmentRow 逾期领用扫描结果 (scheduler 用)
+type OverdueAssignmentRow struct {
+	AssignmentID string    `json:"assignment_id"`
+	AssetID      string    `json:"asset_id"`
+	AssetTag     string    `json:"asset_tag"`
+	AssetName    string    `json:"asset_name"`
+	OrgID        string    `json:"org_id"`
+	AssignedTo   string    `json:"assigned_to"`
+	DueDate      time.Time `json:"due_date"`
+}
+
+// ScanOverdueAssignments 扫描已逾期未还的临时领用 (due_date < 当前日期, status='active')。
+// 跨所有 org 扫描; 每行包含 org_id 供事件发布。LIMIT 1000 防止超大结果集。
+func (r *AssignmentRepo) ScanOverdueAssignments(ctx context.Context, q DBTX) ([]OverdueAssignmentRow, error) {
+	query := `
+		SELECT asgn.id, asgn.asset_id, COALESCE(a.asset_tag, ''),
+		       COALESCE(a.name, ''), asgn.org_id,
+		       COALESCE(asgn.assigned_to::text, ''), asgn.due_date
+		FROM assets.assignments asgn
+		JOIN assets.assets a ON asgn.asset_id = a.id
+		WHERE asgn.status = 'active'
+		  AND asgn.assignment_type = 'temporary'
+		  AND asgn.due_date IS NOT NULL
+		  AND asgn.due_date < CURRENT_DATE
+		  AND a.deleted_at IS NULL
+		ORDER BY asgn.due_date ASC
+		LIMIT 1000`
+	rows, err := q.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("scan overdue assignments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OverdueAssignmentRow
+	for rows.Next() {
+		var r OverdueAssignmentRow
+		if err := rows.Scan(&r.AssignmentID, &r.AssetID, &r.AssetTag,
+			&r.AssetName, &r.OrgID, &r.AssignedTo, &r.DueDate); err != nil {
+			return nil, fmt.Errorf("scan overdue row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}

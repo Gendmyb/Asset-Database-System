@@ -38,6 +38,7 @@ export default function Drawer({ open, onClose, title, children, width = '400px'
         }}
       />
       <div
+        className="drawer-panel"
         style={{
           position: 'fixed',
           top: 0,

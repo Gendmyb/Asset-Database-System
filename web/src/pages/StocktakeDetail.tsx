@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from 'react-hook-form'
@@ -56,6 +56,12 @@ export default function StocktakeDetail() {
   const [surplusOpen, setSurplusOpen] = useState(false)
   const [completeOpen, setCompleteOpen] = useState(false)
   const [applyMoves, setApplyMoves] = useState(false)
+
+  // G3: 扫码录入状态
+  const [scanInput, setScanInput] = useState('')
+  const [scanOpen, setScanOpen] = useState(false)
+  const [scanMsg, setScanMsg] = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null)
+  const scanInputRef = useRef<HTMLInputElement>(null)
 
   const {
     register: registerSurplus,
@@ -175,6 +181,38 @@ export default function StocktakeDetail() {
     }
     updateMutation.mutate({ itemId, data: payload })
   }
+
+  // G3: 扫码录入 — 匹配盘点快照项并标记 found
+  function handleScanSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const tag = scanInput.trim()
+    if (!tag) return
+    // 在已加载 items 中按 asset_tag 匹配 (大小写不敏感)
+    const matched = items.find(
+      (it) =>
+        (it.asset_tag || '').toLowerCase() === tag.toLowerCase() && it.asset_id,
+    )
+    if (!matched) {
+      setScanMsg({ kind: 'err', text: `未找到编号 ${tag} 对应的盘点项` })
+      setScanInput('')
+      return
+    }
+    if (matched.result === 'found') {
+      setScanMsg({ kind: 'info', text: `${tag} 已标记为已找到` })
+      setScanInput('')
+      return
+    }
+    updateMutation.mutate({ itemId: matched.id, data: { result: 'found' } })
+    setScanMsg({ kind: 'ok', text: `${tag} ✓ 已找到` })
+    setScanInput('')
+  }
+
+  // G3: 扫码面板打开时聚焦输入框
+  useEffect(() => {
+    if (scanOpen && scanInputRef.current) {
+      scanInputRef.current.focus()
+    }
+  }, [scanOpen])
 
   function handleLocationChange(itemId: string, locationId: string) {
     updateMutation.mutate({
@@ -399,7 +437,7 @@ export default function StocktakeDetail() {
   const progress = summary.total > 0 ? (summary.checked / summary.total) * 100 : 0
 
   return (
-    <div style={{ padding: 32, maxWidth: 1400 }}>
+    <div className="px-3 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-8" style={{ maxWidth: 1400 }}>
       {/* Back link */}
       <Link
         to="/stocktakes"
@@ -592,6 +630,7 @@ export default function StocktakeDetail() {
 
       {/* Filters */}
       <div
+        className="flex-col sm:flex-row"
         style={{
           display: 'flex',
           gap: 12,
@@ -667,7 +706,72 @@ export default function StocktakeDetail() {
             }}
           />
         </div>
+        {/* G3: 扫码录入入口 (仅 in_progress 计划) */}
+        {plan.status === 'in_progress' && canManage && (
+          <Button
+            variant={scanOpen ? 'primary' : 'secondary'}
+            onClick={() => {
+              setScanOpen((v) => !v)
+              setScanMsg(null)
+            }}
+          >
+            扫码录入
+          </Button>
+        )}
       </div>
+
+      {/* G3: 扫码录入面板 */}
+      {scanOpen && plan.status === 'in_progress' && canManage && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 12,
+            borderRadius: 8,
+            background: 'var(--bg-surface)',
+            border: '1px solid var(--border-subtle)',
+          }}
+        >
+          <form onSubmit={handleScanSubmit} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              ref={scanInputRef}
+              value={scanInput}
+              onChange={(e) => setScanInput(e.target.value)}
+              placeholder="扫码枪输入资产编号 (回车提交)..."
+              style={{
+                flex: 1,
+                minWidth: 200,
+                padding: '8px 12px',
+                borderRadius: 5,
+                border: '1px solid var(--brand)',
+                background: 'rgba(0,0,0,0.02)',
+                color: 'var(--text-primary)',
+                fontSize: 14,
+                fontFamily: 'JetBrains Mono, monospace',
+                outline: 'none',
+              }}
+            />
+            <Button type="submit" variant="primary">
+              标记已找到
+            </Button>
+          </form>
+          {scanMsg && (
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 12,
+                color:
+                  scanMsg.kind === 'err'
+                    ? 'var(--danger)'
+                    : scanMsg.kind === 'ok'
+                      ? 'var(--success)'
+                      : 'var(--text-tertiary)',
+              }}
+            >
+              {scanMsg.text}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Items Error */}
       {itemsError && (
@@ -687,21 +791,23 @@ export default function StocktakeDetail() {
       )}
 
       {/* Items Table */}
-      <DataTable
-        columns={columns}
-        rows={items}
-        loading={itemsLoading}
-        emptyState={{
-          title:
-            items.length === 0 && plan.status === 'draft'
-              ? '盘点尚未开始'
-              : '暂无盘点项目',
-          description:
-            plan.status === 'draft'
-              ? '请先开始盘点以生成待核对项目列表'
-              : '当前筛选条件下没有匹配的项目',
-        }}
-      />
+      <div className="overflow-x-auto">
+        <DataTable
+          columns={columns}
+          rows={items}
+          loading={itemsLoading}
+          emptyState={{
+            title:
+              items.length === 0 && plan.status === 'draft'
+                ? '盘点尚未开始'
+                : '暂无盘点项目',
+            description:
+              plan.status === 'draft'
+                ? '请先开始盘点以生成待核对项目列表'
+                : '当前筛选条件下没有匹配的项目',
+          }}
+        />
+      </div>
 
       {/* Bottom Actions — only for in_progress plans (盘盈 manager+, 完成 admin+) */}
       {plan.status === 'in_progress' && (canManage || canAdmin) && (

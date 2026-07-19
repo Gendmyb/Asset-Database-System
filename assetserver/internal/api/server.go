@@ -13,6 +13,7 @@ import (
 
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/handler"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/middleware"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/auth/ldap"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/config"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/crypto"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
@@ -217,6 +218,14 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 	var authSvc *service.AuthService
 	if !demoMode && pool != nil {
 		authSvc = service.NewAuthService(pool, km)
+		// LDAP 启用时注入认证器 (本地优先 + LDAP 兜底)
+		if cfg.LDAP.Enable {
+			ldapClient := ldap.NewClient(cfg.LDAP)
+			authSvc.SetLDAPAuthenticator(newLDAPAdapter(ldap.NewAuthService(ldapClient, pool)))
+			log.Printf("LDAP enabled: %s:%d (base=%s)", cfg.LDAP.Host, cfg.LDAP.Port, cfg.LDAP.BaseDN)
+		} else {
+			log.Printf("LDAP disabled (running in local-only auth mode)")
+		}
 	}
 
 	// 健康检查 (无需认证)
@@ -370,7 +379,7 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 		seedDemoAssets(demoRepo)
 		registerDemoRoutes(v1, demoRepo)
 	} else {
-		registerProductionRoutes(v1, pool)
+		registerProductionRoutes(v1, pool, cfg)
 	}
 
 	// 静态文件服务 (生产模式: 嵌入前端 SPA)

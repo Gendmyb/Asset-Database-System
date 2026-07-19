@@ -5,13 +5,47 @@ package config
 
 import (
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	Auth     AuthConfig
+	Server    ServerConfig
+	Database  DatabaseConfig
+	Auth      AuthConfig
+	LDAP      LDAPConfig
+	Scheduler SchedulerConfig
+}
+
+// SchedulerConfig 调度器配置 (Wave 1 G4)
+// Interval <= 0 时调度器不启动 (默认 off, 生产显式开启)。
+type SchedulerConfig struct {
+	Interval     time.Duration // 扫描间隔; 0 = 不启动
+	WarrantyDays int           // 质保临近到期阈值 (默认 30)
+	EnableLDAP   bool          // 是否在循环中调用 LDAP 同步
+}
+
+// LDAPConfig AD/LDAP 集成配置
+// 未配置 (Enable=false) 时系统以纯本地模式运行, 不依赖任何目录服务。
+type LDAPConfig struct {
+	Enable        bool   // 是否启用 LDAP 登录与同步
+	Host          string // AD/LDAP 主机 (e.g. ldap.corp.local)
+	Port          int    // 端口 (389 明文 / 636 LDAPS)
+	UseTLS        bool   // 启用 StartTLS (port 389 推荐)
+	UseSSL        bool   // LDAPS (port 636)
+	BindDN        string // 服务账号 DN (用于搜索用户/组, 禁止日志打印其密码)
+	BindPassword  string // 服务账号密码 (从环境变量 LDAP_BIND_PASSWORD 读取)
+	BaseDN        string // 搜索根 DN (e.g. dc=corp,dc=local)
+	UserFilter    string // 用户搜索过滤器, %s 占位符替换为用户名
+	// 字段映射 (默认走 AD 标准属性名)
+	AttrUsername    string // sAMAccountName
+	AttrDisplayName string // displayName
+	AttrEmail       string // mail
+	AttrDN          string // distinguishedName
+	AttrOrg         string // department
+	// 离职处理: 同步时 AD 不再返回的用户做软删除
+	SyncDisabledOnly bool // true 则仅禁用不软删除 (保留可登录历史), 默认 false=软删除
 }
 
 type ServerConfig struct {
@@ -20,6 +54,9 @@ type ServerConfig struct {
 	ReadTimeout     time.Duration `default:"30s"`
 	WriteTimeout    time.Duration `default:"30s"`
 	ShutdownTimeout time.Duration `default:"10s"`
+	// ExternalURL 受信基础 URL (e.g. https://assets.corp.local), 用于二维码等
+	// 需要回拼前端 URL 的场景。为空时禁止 url 模式 QR 生成 (防 Host 头注入钓鱼)。
+	ExternalURL string
 }
 
 type DatabaseConfig struct {
@@ -54,6 +91,7 @@ func Load() (*Config, error) {
 			ReadTimeout:     30 * time.Second,
 			WriteTimeout:    30 * time.Second,
 			ShutdownTimeout: 10 * time.Second,
+			ExternalURL:     strings.TrimRight(getEnv("EXTERNAL_URL", ""), "/"),
 		},
 		Database: DatabaseConfig{
 			Host:            getEnv("DB_HOST", "localhost"),
@@ -74,8 +112,78 @@ func Load() (*Config, error) {
 			Audience:        "asset-db",
 			Ed25519Seed:     os.Getenv("JWT_ED25519_SEED"),
 		},
+		LDAP: loadLDAPConfig(),
+		Scheduler: SchedulerConfig{
+			Interval:     loadSchedulerInterval(),
+			WarrantyDays: getEnvInt("SCHEDULER_WARRANTY_DAYS", 30),
+			EnableLDAP:   getEnvBool("SCHEDULER_LDAP_SYNC", false),
+		},
 	}
 	return cfg, nil
+}
+
+// loadSchedulerInterval 解析 env SCHEDULER_INTERVAL
+// 默认 "off" (不启动); 支持 "30m" / "1h" / "24h" 等 Go duration, 或纯数字秒。
+func loadSchedulerInterval() time.Duration {
+	v := getEnv("SCHEDULER_INTERVAL", "off")
+	if v == "" || v == "off" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err == nil {
+		return d
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return 0
+}
+
+// loadLDAPConfig 从环境变量读取 LDAP 配置
+// 任一关键字段缺失则 Enable=false (系统以纯本地模式运行)
+func loadLDAPConfig() LDAPConfig {
+	cfg := LDAPConfig{
+		Host:            getEnv("LDAP_HOST", ""),
+		Port:            getEnvInt("LDAP_PORT", 389),
+		UseTLS:          getEnvBool("LDAP_USE_TLS", false),
+		UseSSL:          getEnvBool("LDAP_USE_SSL", false),
+		BindDN:          getEnv("LDAP_BIND_DN", ""),
+		BindPassword:    os.Getenv("LDAP_BIND_PASSWORD"),
+		BaseDN:          getEnv("LDAP_BASE_DN", ""),
+		UserFilter:      getEnv("LDAP_USER_FILTER", "(&(objectClass=user)(sAMAccountName=%s))"),
+		AttrUsername:    getEnv("LDAP_ATTR_USERNAME", "sAMAccountName"),
+		AttrDisplayName: getEnv("LDAP_ATTR_DISPLAY_NAME", "displayName"),
+		AttrEmail:       getEnv("LDAP_ATTR_EMAIL", "mail"),
+		AttrDN:          getEnv("LDAP_ATTR_DN", "distinguishedName"),
+		AttrOrg:         getEnv("LDAP_ATTR_ORG", "department"),
+		SyncDisabledOnly: getEnvBool("LDAP_SYNC_DISABLE_ONLY", false),
+	}
+	// 仅在关键字段齐全时启用 LDAP
+	if cfg.Host != "" && cfg.BaseDN != "" && cfg.BindDN != "" {
+		cfg.Enable = true
+	}
+	return cfg
+}
+
+func getEnvInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+	return fallback
 }
 
 func (d *DatabaseConfig) DSN() string {

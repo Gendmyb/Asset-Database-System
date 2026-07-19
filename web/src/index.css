@@ -2,6 +2,10 @@
    注意: 必须在 main.tsx 中 import 才会生效。组件全部使用内联样式 + CSS 变量,
    不使用 Tailwind utility class, 因此不引入 @tailwind 指令 (避免 preflight 重置)。 */
 
+/* Wave 1 G3: 仅启用 Tailwind 工具类层 (preflight 已在 tailwind.config 关闭),
+   用于盘点页/资产详情页的移动端响应式 (sm:/md:/lg:)。 */
+@tailwind utilities;
+
 :root {
   --bg-base: #fbfbfa;
   --bg-panel: #ffffff;
@@ -54,3 +58,12 @@ input, select, button, textarea, a, table, th, td, div, span, p, h1, h2, h3, h4,
 
 /* 确保 placeholder 可见 */
 ::placeholder { color: #9a9a9a !important; opacity: 1 !important; }
+
+/* Wave 1 G3: 移动端响应式 — 窄屏下 Drawer 全屏, 表格/容器横向滚动 */
+@media (max-width: 640px) {
+  .drawer-panel {
+    width: 100% !important;
+    border-left: none !important;
+  }
+}
+

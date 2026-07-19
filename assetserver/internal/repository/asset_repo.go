@@ -199,6 +199,31 @@ func (r *AssetRepo) GetByID(ctx context.Context, q DBTX, id string, orgID string
 	return &a, nil
 }
 
+// GetByTag 按 asset_tag + org_id 获取单个资产 (用于 QR 码生成等)
+func (r *AssetRepo) GetByTag(ctx context.Context, q DBTX, tag string, orgID string) (*AssetRow, error) {
+	var a AssetRow
+	err := q.QueryRow(ctx,
+		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
+		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
+		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason
+		 FROM assets.assets WHERE asset_tag = $1 AND org_id = $2 AND deleted_at IS NULL`, tag, orgID,
+	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
+		&a.SerialNumber, &a.Manufacturer, &a.Model,
+		&a.LifecycleState, &a.Status, &a.Properties,
+		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
+		&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
+		&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
+		&a.ManagedBy, &a.RetiredAt, &a.RetireReason)
+	if err == pgx.ErrNoRows {
+		return nil, fmt.Errorf("asset not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get asset by tag: %w", err)
+	}
+	return &a, nil
+}
+
 // Create 创建资产
 func (r *AssetRepo) Create(ctx context.Context, q DBTX, a *AssetRow) error {
 	_, err := q.Exec(ctx,
@@ -324,6 +349,50 @@ func (r *AssetRepo) LockAssetsSorted(ctx context.Context, q DBTX, ids []string, 
 		assets = append(assets, a)
 	}
 	return assets, nil
+}
+
+// WarrantyExpiringRow 质保到期扫描结果 (scheduler 用)
+type WarrantyExpiringRow struct {
+	AssetID       string    `json:"asset_id"`
+	AssetTag      string    `json:"asset_tag"`
+	Name          string    `json:"name"`
+	OrgID         string    `json:"org_id"`
+	WarrantyUntil time.Time `json:"warranty_until"`
+	Expired       bool      `json:"expired"`
+}
+
+// ScanWarrantyExpiring 扫描质保即将到期 (within days 天) 与已过期的资产。
+// 跨所有 org 扫描 (scheduler 系统级任务); 每行包含 org_id 供事件发布。
+// 只查未软删除且质保日期非空的资产。
+func (r *AssetRepo) ScanWarrantyExpiring(ctx context.Context, q DBTX, days int) ([]WarrantyExpiringRow, error) {
+	if days <= 0 {
+		days = 30
+	}
+	query := `
+		SELECT id, asset_tag, name, org_id, warranty_until,
+		       (warranty_until < CURRENT_DATE) AS expired
+		FROM assets.assets
+		WHERE deleted_at IS NULL
+		  AND warranty_until IS NOT NULL
+		  AND warranty_until < CURRENT_DATE + $1::int
+		ORDER BY warranty_until ASC
+		LIMIT 1000`
+	rows, err := q.Query(ctx, query, days)
+	if err != nil {
+		return nil, fmt.Errorf("scan warranty expiring: %w", err)
+	}
+	defer rows.Close()
+
+	var out []WarrantyExpiringRow
+	for rows.Next() {
+		var r WarrantyExpiringRow
+		if err := rows.Scan(&r.AssetID, &r.AssetTag, &r.Name, &r.OrgID,
+			&r.WarrantyUntil, &r.Expired); err != nil {
+			return nil, fmt.Errorf("scan warranty row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // cursor 编解码

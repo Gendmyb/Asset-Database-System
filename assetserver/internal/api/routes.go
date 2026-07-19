@@ -13,6 +13,8 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/handler"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/middleware"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/audit"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/auth/ldap"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/config"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
 	"github.com/gin-gonic/gin"
@@ -22,7 +24,7 @@ import (
 )
 
 // registerProductionRoutes 注册生产模式 (PG) 路由
-func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
+func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *config.Config) {
 	assetRepo := repository.NewAssetRepo()
 	assignmentRepo := repository.NewAssignmentRepo()
 	dashRepo := repository.NewDashboardRepo()
@@ -129,6 +131,12 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	// 资产 CRUD
 	viewer.GET("/assets", assetV2.ListAssets)
 	viewer.GET("/assets/:id", assetV2.GetAsset)
+
+	// Wave 1 G3: 资产二维码 (viewer+) — 与 /assets/:id 同前缀, :id 复用为参数名以避免 Gin 路由参数名冲突
+	// (实际语义为 asset_tag, 由 handler 按 tag 查询)
+	qrcodeH := handler.NewQRCodeHandler(assetRepo, pool, cfg.Server.ExternalURL)
+	viewer.GET("/assets/:id/qrcode", qrcodeH.GetAssetQRCode)
+
 	manager.POST("/assets", assetV2.CreateAsset)
 	manager.POST("/assets/batch", assetV2.CreateAssetBatch)
 	manager.PUT("/assets/:id", assetV2.UpdateAsset)
@@ -427,6 +435,9 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	admin.GET("/assets/export", reportH.ExportAssets)
 	admin.GET("/reports/depreciation/export", reportH.ExportDepreciation)
 
+	// ======== Wave 1 G5: Excel (xlsx) 导出 (admin+) ========
+	admin.GET("/reports/assets.xlsx", reportH.ExportAssetsXLSX)
+
 	// ======== Phase H: CSV 导入 ========
 	manager.GET("/assets/import/template", importH.GetTemplate)
 	manager.POST("/assets/import", importH.ImportAssets)
@@ -438,4 +449,26 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	admin.PUT("/admin/webhooks/:id", webhookH.UpdateEndpoint)
 	admin.DELETE("/admin/webhooks/:id", webhookH.DeleteEndpoint)
 	admin.GET("/admin/webhooks/:id/deliveries", webhookH.ListDeliveries)
+
+	// ======== Wave 1 G1: AD/LDAP 手动同步 (admin+) ========
+	// 仅在 LDAP 启用时注册; 未启用时端点返回 503 便于前端探测。
+	var ldapSyncH *handler.LDAPSyncHandler
+	if cfg != nil && cfg.LDAP.Enable {
+		ldapSyncH = handler.NewLDAPSyncHandler(
+			ldap.NewSyncService(ldap.NewClient(cfg.LDAP), pool),
+		)
+	}
+	admin.POST("/admin/ldap/sync", func(c *gin.Context) {
+		if ldapSyncH == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "LDAP 未启用"})
+			return
+		}
+		ldapSyncH.Sync(c)
+	})
+
+	// ======== Wave 1 G2: 用户批量导入 (admin+) ========
+	userImportSvc := service.NewUserImportService()
+	userImportH := handler.NewUserImportHandler(userImportSvc, pool)
+	admin.GET("/admin/users/import/template", userImportH.GetTemplate)
+	admin.POST("/admin/users/import", userImportH.ImportUsers)
 }
