@@ -10,7 +10,6 @@ const STATUS_OPTIONS = [
 
 const LIFECYCLE_OPTIONS = [
   { value: '', label: '全部生命周期' },
-  { value: 'procurement', label: '采购中' },
   { value: 'deployment', label: '部署中' },
   { value: 'utilization', label: '使用中' },
   { value: 'maintenance', label: '维护中' },

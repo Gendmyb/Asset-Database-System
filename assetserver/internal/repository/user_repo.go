@@ -27,13 +27,13 @@ func NewUserRepo() *UserRepo {
 	return &UserRepo{}
 }
 
-// ListByOrg 获取组织内所有活跃用户
+// ListByOrg 获取组织内所有活跃用户 (排除已软删除)
 func (r *UserRepo) ListByOrg(ctx context.Context, q DBTX, orgID string) ([]UserRow, error) {
 	rows, err := q.Query(ctx,
 		`SELECT id, username, role, COALESCE(email,''), org_id::text, status,
 		        COALESCE(last_login_at, '0001-01-01'::timestamptz),
 		        must_change_password, created_at, updated_at
-		 FROM assets.users WHERE org_id = $1 AND status = 'active'
+		 FROM assets.users WHERE org_id = $1 AND status = 'active' AND deleted_at IS NULL
 		 ORDER BY username`, orgID)
 	if err != nil {
 		return nil, err
@@ -88,13 +88,13 @@ func (r *UserRepo) EnsureSeedUsers(ctx context.Context, q DBTX) error {
 	return nil
 }
 
-// ListAll 获取所有用户 (不限制 org)
+// ListAll 获取所有用户 (不限制 org, 排除已软删除 — 删除即从管理列表移除但保留记录)
 func (r *UserRepo) ListAll(ctx context.Context, q DBTX) ([]UserRow, error) {
 	rows, err := q.Query(ctx,
 		`SELECT id, username, role, COALESCE(email,''), org_id::text, status,
 		        COALESCE(last_login_at, '0001-01-01'::timestamptz),
 		        must_change_password, created_at, updated_at
-		 FROM assets.users ORDER BY username`)
+		 FROM assets.users WHERE deleted_at IS NULL ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +135,18 @@ func (r *UserRepo) UpdateUser(ctx context.Context, q DBTX, userID string, update
 		userID, updates["role"], updates["status"], updates["email"],
 	)
 	return err
+}
+
+// SoftDelete 软删除用户: 置 deleted_at + status='disabled', 行保留以维系审计/领用历史。
+// 返回 RowsAffected, 调用方据此判断用户是否存在/已删除。
+func (r *UserRepo) SoftDelete(ctx context.Context, q DBTX, userID string) (int64, error) {
+	tag, err := q.Exec(ctx,
+		`UPDATE assets.users SET deleted_at = now(), status = 'disabled', updated_at = now()
+		 WHERE id = $1 AND deleted_at IS NULL`, userID)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // SetPasswordHash 设置密码 hash

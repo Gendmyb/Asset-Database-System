@@ -125,7 +125,7 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*Lo
 	)
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, role, org_id, COALESCE(email,''), password_hash, status
-		 FROM assets.users WHERE username = $1`, username,
+		 FROM assets.users WHERE username = $1 AND deleted_at IS NULL`, username,
 	).Scan(&userID, &role, &orgID, &email, &passwordHash, &status)
 	if err != nil {
 		return nil, fmt.Errorf("用户名或密码错误")
@@ -268,7 +268,7 @@ func (s *AuthService) GetUserByID(ctx context.Context, userID string) (*UserInfo
 	var u UserInfo
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, username, role, org_id::text, COALESCE(email,'')
-		 FROM assets.users WHERE id = $1 AND status = 'active'`, userID,
+		 FROM assets.users WHERE id = $1 AND status = 'active' AND deleted_at IS NULL`, userID,
 	).Scan(&u.ID, &u.Username, &u.Role, &u.OrgID, &u.Email)
 	if err != nil {
 		return nil, fmt.Errorf("用户未找到")

@@ -8,7 +8,6 @@ import "fmt"
 type LifecycleState string
 
 const (
-	StateProcurement LifecycleState = "procurement"
 	StateDeployment  LifecycleState = "deployment"
 	StateUtilization LifecycleState = "utilization"
 	StateMaintenance LifecycleState = "maintenance"
@@ -17,8 +16,8 @@ const (
 
 // ValidTransitions 合法转换矩阵
 // 对应架构文档 §5.4
+// 注: 已移除 procurement (采购中) 状态, 资产入库即进入 deployment。
 var ValidTransitions = map[LifecycleState][]LifecycleState{
-	StateProcurement: {StateDeployment, StateRetirement},
 	StateDeployment:  {StateUtilization, StateMaintenance, StateRetirement},
 	StateUtilization: {StateMaintenance, StateRetirement},
 	StateMaintenance: {StateUtilization, StateRetirement},
@@ -60,7 +59,6 @@ func ValidateTransition(from, to LifecycleState) error {
 
 // AllStates 所有合法状态
 var AllStates = []LifecycleState{
-	StateProcurement,
 	StateDeployment,
 	StateUtilization,
 	StateMaintenance,

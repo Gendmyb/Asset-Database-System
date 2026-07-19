@@ -19,7 +19,6 @@ import { useAuthStore } from '../../store/authStore'
 import { canManage as canManageRole } from '../../lib/roles'
 
 const LIFECYCLE_LABELS: Record<string, string> = {
-  procurement: '采购中',
   deployment: '部署中',
   utilization: '使用中',
   maintenance: '维护中',
@@ -27,10 +26,9 @@ const LIFECYCLE_LABELS: Record<string, string> = {
 }
 
 const ALLOWED_TRANSITIONS: Record<string, string[]> = {
-  procurement: ['deployment'],
   deployment: ['utilization', 'maintenance'],
-  utilization: ['maintenance', 'retirement'],
-  maintenance: ['utilization', 'retirement'],
+  utilization: ['maintenance'],
+  maintenance: ['utilization'],
   retirement: [],
 }
 
@@ -103,7 +101,7 @@ export default function AssetDetailPanel({
   // Fetch assigned user
   useEffect(() => {
     let cancelled = false
-    if (asset.status !== 'assigned') {
+    if (asset.status !== 'assigned' && asset.status !== 'borrowed') {
       setAssignedUser(null)
       return
     }
@@ -529,7 +527,7 @@ export default function AssetDetailPanel({
               </Button>
             </div>
           )}
-          {asset.status === 'assigned' && (
+          {(asset.status === 'assigned' || asset.status === 'borrowed') && (
             <Button
               onClick={() => releasesMutation.mutate()}
               loading={releasesMutation.isPending}
@@ -543,7 +541,11 @@ export default function AssetDetailPanel({
       )}
 
       {/* Maintenance Actions: Repair (manager+) / Retire (admin+) */}
-      {asset.lifecycle_state !== 'retirement' && (canManage || isAdmin) && (
+      {/* 报废: 已领用/借用中 (有活跃领用) 时不允许, 需先归还; 后端亦会拦截 */}
+      {asset.lifecycle_state !== 'retirement' &&
+        asset.status !== 'assigned' &&
+        asset.status !== 'borrowed' &&
+        (canManage || isAdmin) && (
         <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
           {canManage && (
             <Button
@@ -571,6 +573,25 @@ export default function AssetDetailPanel({
           )}
         </div>
       )}
+
+      {/* 借用/领用中提示: 报废被锁定 */}
+      {asset.lifecycle_state !== 'retirement' &&
+        (asset.status === 'assigned' || asset.status === 'borrowed') &&
+        isAdmin && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: '8px 12px',
+              borderRadius: 6,
+              background: 'rgba(217,119,6,0.08)',
+              border: '1px solid rgba(217,119,6,0.2)',
+              color: 'var(--warning)',
+              fontSize: 12,
+            }}
+          >
+            资产{asset.status === 'borrowed' ? '借用中' : '已领用'}，请先归还后再报废。
+          </div>
+        )}
 
       {/* Repair Modal */}
       <Modal

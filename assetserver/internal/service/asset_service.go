@@ -76,7 +76,7 @@ func (s *AssetService) CreateAsset(ctx context.Context, pool *pgxpool.Pool, inpu
 
 	now := time.Now()
 	if input.LifecycleState == "" {
-		input.LifecycleState = "procurement"
+		input.LifecycleState = "deployment"
 	}
 	if input.DepreciationMethod == "" {
 		input.DepreciationMethod = "none"
@@ -161,7 +161,7 @@ func (s *AssetService) CreateAssetBatch(ctx context.Context, pool *pgxpool.Pool,
 
 	now := time.Now()
 	if input.LifecycleState == "" {
-		input.LifecycleState = "procurement"
+		input.LifecycleState = "deployment"
 	}
 	if input.DepreciationMethod == "" {
 		input.DepreciationMethod = "none"

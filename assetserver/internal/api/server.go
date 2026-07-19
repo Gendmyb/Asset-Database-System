@@ -442,7 +442,7 @@ func seedDemoAssets(repo *DemoAssetRepo) {
 			ID: "demo-004", AssetTag: "AST-004", Name: "ThinkPad X1 Carbon Gen 12",
 			TypeID: "10000000-0000-4000-a000-000000000001", OrgID: orgUUID,
 			Manufacturer: strPtr("Lenovo"), Model: strPtr("21KC"),
-			SerialNumber: strPtr("LEN901234"), LifecycleState: "procurement",
+			SerialNumber: strPtr("LEN901234"), LifecycleState: "deployment",
 			Status: "maintenance", Version: 1, CreatedAt: now, UpdatedAt: now,
 		},
 		{

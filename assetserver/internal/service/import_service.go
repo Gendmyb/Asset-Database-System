@@ -328,7 +328,7 @@ func (s *ImportService) ExecuteImport(ctx context.Context, pool *pgxpool.Pool, o
 			SerialNumber:       serialNumber,
 			Manufacturer:       manufacturer,
 			Model:              model,
-			LifecycleState:     "procurement",
+			LifecycleState:     "deployment",
 			Status:             "available",
 			Properties:         json.RawMessage("{}"),
 			Version:            1,

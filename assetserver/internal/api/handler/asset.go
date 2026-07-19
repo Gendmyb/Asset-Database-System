@@ -117,7 +117,7 @@ func (h *AssetHandler) CreateAsset(c *gin.Context) {
 	}
 
 	if input.LifecycleState == "" {
-		input.LifecycleState = "procurement"
+		input.LifecycleState = "deployment"
 	}
 	if input.Status == "" {
 		input.Status = "available"

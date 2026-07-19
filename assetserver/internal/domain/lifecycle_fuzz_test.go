@@ -63,23 +63,20 @@ func fuzzLifecycleTransitions(fromIdx, toIdx int) error {
 // FuzzLifecycleTransitions Go 原生 fuzzing
 func FuzzLifecycleTransitions(f *testing.F) {
 	// 种子：覆盖所有已知合法和非法转换
+	// AllStates 顺序: 0=deployment, 1=utilization, 2=maintenance, 3=retirement
 	seeds := []struct{ from, to int }{
-		{0, 0}, // procurement → procurement (幂等)
-		{0, 1}, // procurement → deployment (合法)
-		{0, 4}, // procurement → retirement (合法)
-		{0, 2}, // procurement → utilization (非法 — 不能跳过)
-		{1, 2}, // deployment → utilization (合法)
-		{1, 3}, // deployment → maintenance (合法)
-		{1, 4}, // deployment → retirement (合法)
-		{2, 3}, // utilization → maintenance (合法)
-		{2, 4}, // utilization → retirement (合法)
-		{3, 2}, // maintenance → utilization (合法)
-		{3, 4}, // maintenance → retirement (合法)
-		{4, 4}, // retirement → retirement (幂等)
-		{4, 0}, // retirement → procurement (非法 — 终态)
-		{4, 1}, // retirement → deployment (非法 — 终态)
-		{4, 2}, // retirement → utilization (非法 — 终态)
-		{4, 3}, // retirement → maintenance (非法 — 终态)
+		{0, 0}, // deployment → deployment (幂等)
+		{0, 1}, // deployment → utilization (合法)
+		{0, 2}, // deployment → maintenance (合法)
+		{0, 3}, // deployment → retirement (合法)
+		{1, 2}, // utilization → maintenance (合法)
+		{1, 3}, // utilization → retirement (合法)
+		{2, 1}, // maintenance → utilization (合法)
+		{2, 3}, // maintenance → retirement (合法)
+		{3, 3}, // retirement → retirement (幂等)
+		{3, 0}, // retirement → deployment (非法 — 终态)
+		{3, 1}, // retirement → utilization (非法 — 终态)
+		{3, 2}, // retirement → maintenance (非法 — 终态)
 	}
 
 	for _, s := range seeds {
@@ -152,8 +149,6 @@ func TestAllStatesReachTerminal(t *testing.T) {
 		}
 		// 验证每个非终态至少有一条路径到 retirement
 		if !from.CanTransitionTo(terminal) {
-			// 对于 procurement，可以直接转 retirement
-			// 这是架构文档中定义的
 			t.Logf("state %s cannot directly transition to retirement — checking indirect path", from)
 		} else {
 			t.Logf("state %s → retirement: OK", from)
@@ -216,12 +211,12 @@ func TestInvalidStateStrings(t *testing.T) {
 	invalidStates := []LifecycleState{"", "unknown", "DELETED", "archived", "active"}
 
 	for _, invalid := range invalidStates {
-		err := ValidateTransition(StateProcurement, invalid)
+		err := ValidateTransition(StateDeployment, invalid)
 		if err == nil {
 			t.Errorf("should reject invalid target state %q", invalid)
 		}
 
-		err = ValidateTransition(invalid, StateProcurement)
+		err = ValidateTransition(invalid, StateDeployment)
 		if err == nil {
 			t.Errorf("should reject invalid source state %q", invalid)
 		}

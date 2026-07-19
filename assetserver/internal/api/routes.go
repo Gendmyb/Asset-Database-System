@@ -373,6 +373,26 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{"new_password": randPwd}})
 	})
 
+	// DELETE /admin/users/:id — 软删除用户 (保留记录: 行不删除, 置 deleted_at)
+	admin.DELETE("/admin/users/:id", func(c *gin.Context) {
+		targetID := c.Param("id")
+		// 禁止删除自己
+		if targetID == c.GetString("user_id") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "不能删除当前登录用户"})
+			return
+		}
+		affected, err := userRepo.SoftDelete(c.Request.Context(), pool, targetID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("删除失败: %v", err)})
+			return
+		}
+		if affected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "用户不存在或已删除"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"data": "ok"})
+	})
+
 	// ======== Phase F: 维修/保养工单 ========
 	// 工单 CRUD (manager+ 写, viewer+ 读)
 	manager.POST("/maintenance-orders", maintenanceH.CreateMaintenanceOrder)

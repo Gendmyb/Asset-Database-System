@@ -21,7 +21,6 @@ const STATUS_LABELS: Record<string, string> = {
 }
 
 const LIFECYCLE_LABELS: Record<string, string> = {
-  procurement: '采购中',
   deployment: '部署中',
   utilization: '使用中',
   maintenance: '维护中',

@@ -50,6 +50,10 @@ type AssignmentRow struct {
 	AssignedAt     time.Time  `json:"assigned_at"`
 	ReturnedAt     *time.Time `json:"returned_at,omitempty"`
 	Version        int        `json:"version"`
+	// JOIN 解析的展示字段 (避免前端显示 UUID)
+	AssetName      string `json:"asset_name"`
+	AssetTag       string `json:"asset_tag"`
+	AssignedToName string `json:"assigned_to_name"`
 }
 
 // AssignmentFilter 领用查询过滤条件
@@ -221,29 +225,33 @@ func (r *AssignmentRepo) ListAssignments(ctx context.Context, q DBTX, f Assignme
 		f.Limit = 50
 	}
 
-	query := `SELECT id, asset_id, org_id, assigned_to, assigned_by, status,
-		assignment_type, COALESCE(notes,''), return_notes, due_date, assigned_at, returned_at, version
-		FROM assets.assignments WHERE org_id = $1`
+	query := `SELECT asn.id, asn.asset_id, asn.org_id, asn.assigned_to, asn.assigned_by, asn.status,
+		asn.assignment_type, COALESCE(asn.notes,''), asn.return_notes, asn.due_date, asn.assigned_at, asn.returned_at, asn.version,
+		COALESCE(a.name,''), COALESCE(a.asset_tag,''), COALESCE(u.username,'')
+		FROM assets.assignments asn
+		LEFT JOIN assets.assets a ON a.id = asn.asset_id
+		LEFT JOIN assets.users u ON u.id = asn.assigned_to
+		WHERE asn.org_id = $1`
 	args := []interface{}{f.OrgID}
 	argIdx := 2
 
 	if f.Status != "" {
-		query += fmt.Sprintf(" AND status = $%d", argIdx)
+		query += fmt.Sprintf(" AND asn.status = $%d", argIdx)
 		args = append(args, f.Status)
 		argIdx++
 	}
 	if f.Type != "" {
-		query += fmt.Sprintf(" AND assignment_type = $%d", argIdx)
+		query += fmt.Sprintf(" AND asn.assignment_type = $%d", argIdx)
 		args = append(args, f.Type)
 		argIdx++
 	}
 	if f.AssignedTo != "" {
-		query += fmt.Sprintf(" AND assigned_to = $%d", argIdx)
+		query += fmt.Sprintf(" AND asn.assigned_to = $%d", argIdx)
 		args = append(args, f.AssignedTo)
 		argIdx++
 	}
 	if f.Overdue {
-		query += " AND status = 'active' AND assignment_type = 'temporary' AND due_date < CURRENT_DATE"
+		query += " AND asn.status = 'active' AND asn.assignment_type = 'temporary' AND asn.due_date < CURRENT_DATE"
 	}
 
 	// 游标分页
@@ -256,7 +264,7 @@ func (r *AssignmentRepo) ListAssignments(ctx context.Context, q DBTX, f Assignme
 		}
 	}
 
-	query += fmt.Sprintf(" ORDER BY assigned_at DESC, id DESC LIMIT $%d", argIdx)
+	query += fmt.Sprintf(" ORDER BY asn.assigned_at DESC, asn.id DESC LIMIT $%d", argIdx)
 	args = append(args, f.Limit+1)
 
 	rows, err := q.Query(ctx, query, args...)
@@ -270,7 +278,8 @@ func (r *AssignmentRepo) ListAssignments(ctx context.Context, q DBTX, f Assignme
 		var a AssignmentRow
 		if err := rows.Scan(&a.ID, &a.AssetID, &a.OrgID, &a.AssignedTo, &a.AssignedBy,
 			&a.Status, &a.AssignmentType, &a.Notes, &a.ReturnNotes, &a.DueDate,
-			&a.AssignedAt, &a.ReturnedAt, &a.Version); err != nil {
+			&a.AssignedAt, &a.ReturnedAt, &a.Version,
+			&a.AssetName, &a.AssetTag, &a.AssignedToName); err != nil {
 			return nil, "", false, fmt.Errorf("scan assignment: %w", err)
 		}
 		assignments = append(assignments, a)

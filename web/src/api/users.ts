@@ -49,3 +49,8 @@ export function update(id: string, data: UpdateUserData): Promise<User> {
 export function resetPassword(id: string): Promise<{ new_password: string }> {
   return api.post(`/admin/users/${id}/reset-password`).then((r) => r.data)
 }
+
+// 软删除用户 (保留记录, 仅置 deleted_at)
+export function remove(id: string): Promise<void> {
+  return api.delete(`/admin/users/${id}`).then((r) => r.data)
+}

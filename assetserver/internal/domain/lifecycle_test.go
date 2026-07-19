@@ -8,9 +8,6 @@ func TestValidTransitions(t *testing.T) {
 		from, to LifecycleState
 		valid    bool
 	}{
-		{StateProcurement, StateDeployment, true},
-		{StateProcurement, StateRetirement, true},
-		{StateProcurement, StateUtilization, false},
 		{StateDeployment, StateUtilization, true},
 		{StateDeployment, StateMaintenance, true},
 		{StateDeployment, StateRetirement, true},

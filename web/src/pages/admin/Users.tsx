@@ -23,6 +23,7 @@ export default function Users() {
   const [showCreate, setShowCreate] = useState(false)
   const [resetTarget, setResetTarget] = useState<string | null>(null)
   const [newPassword, setNewPassword] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; username: string } | null>(null)
   const queryClient = useQueryClient()
 
   const { data: users, isLoading } = useQuery({
@@ -70,6 +71,16 @@ export default function Users() {
     onSuccess: (data: any) => {
       const pwd = data?.new_password || data?.data?.new_password || '已重置'
       setNewPassword(pwd)
+      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] })
+    },
+    onError: (err) => toast.error(getApiError(err)),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => usersApi.remove(id),
+    onSuccess: () => {
+      toast.success('用户已删除（记录已保留）')
+      setDeleteTarget(null)
       queryClient.invalidateQueries({ queryKey: ['admin', 'users'] })
     },
     onError: (err) => toast.error(getApiError(err)),
@@ -148,6 +159,13 @@ export default function Users() {
           >
             重置密码
           </Button>
+          <Button
+            variant="ghost"
+            onClick={() => setDeleteTarget({ id: row.id, username: row.username })}
+            style={{ fontSize: 12, padding: '4px 8px', color: 'var(--danger)' }}
+          >
+            删除
+          </Button>
         </div>
       ),
     },
@@ -222,6 +240,20 @@ export default function Users() {
           }
         }}
         loading={resetMutation.isPending}
+      />
+
+      {/* Delete User Confirm (软删除, 保留记录) */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        title="删除用户"
+        description={`确认删除用户「${deleteTarget?.username || ''}」吗？该用户将无法登录并从列表移除，但历史记录会保留。`}
+        confirmLabel="确认删除"
+        danger
+        onConfirm={() => {
+          if (deleteTarget) deleteMutation.mutate(deleteTarget.id)
+        }}
+        loading={deleteMutation.isPending}
       />
     </div>
   )
