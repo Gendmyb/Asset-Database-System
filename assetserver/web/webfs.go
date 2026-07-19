@@ -1,19 +1,28 @@
-// Package webfs — 嵌入前端构建产物 (SPA dist)
+// Package web — 嵌入前端构建产物 (SPA dist)
 // 对应架构文档 §13.3 多阶段 Docker 构建 + embed
 package web
 
 import (
 	"embed"
+	"io/fs"
 	"net/http"
 )
 
 //go:embed dist
 var distFS embed.FS
 
-// Handler returns an http.FileSystem for the embedded frontend assets.
-// In the Docker multi-stage build, web/dist is populated by the web-builder stage.
-// For local development, run 'npm run build' in the web/ directory first,
-// then copy/symlink the output to assetserver/web/dist/.
-func Handler() http.FileSystem {
-	return http.FS(distFS)
+// Sub returns the dist sub-filesystem (strips "dist/" prefix) for direct fs operations.
+func Sub() (fs.FS, error) {
+	return fs.Sub(distFS, "dist")
+}
+
+// Handler returns an http.Handler that serves the embedded SPA with proper
+// client-side routing fallback. Use with NoRoute or as a catch-all.
+func Handler() http.Handler {
+	sub, err := Sub()
+	if err != nil {
+		// Should never happen since dist is always embedded
+		panic("web: failed to sub dist: " + err.Error())
+	}
+	return http.FileServer(http.FS(sub))
 }

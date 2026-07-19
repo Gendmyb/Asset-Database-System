@@ -385,23 +385,14 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 
 	// 静态文件服务 (生产模式: 嵌入前端 SPA)
 	if !demoMode {
+		spaHandler := web.Handler()
 		engine.NoRoute(func(c *gin.Context) {
 			path := c.Request.URL.Path
 			if strings.HasPrefix(path, "/api") || path == "/healthz" || path == "/readyz" {
 				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 				return
 			}
-			fs := web.Handler()
-			if path == "/" {
-				path = "/index.html"
-			}
-			f, err := fs.Open(path)
-			if err != nil {
-				path = "/index.html"
-			} else {
-				f.Close()
-			}
-			c.FileFromFS(path, fs)
+			spaHandler.ServeHTTP(c.Writer, c.Request)
 		})
 	}
 
