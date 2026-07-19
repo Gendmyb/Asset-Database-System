@@ -46,7 +46,11 @@ export default function Modal({ open, onClose, title, children, width = '440px' 
           border: '1px solid var(--border-default)',
           width: '100%',
           maxWidth: width,
+          maxHeight: '90vh',
           margin: '0 16px',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -57,6 +61,7 @@ export default function Modal({ open, onClose, title, children, width = '440px' 
             justifyContent: 'space-between',
             padding: '16px 24px',
             borderBottom: '1px solid var(--border-subtle)',
+            flexShrink: 0,
           }}
         >
           <h3 style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
@@ -76,7 +81,7 @@ export default function Modal({ open, onClose, title, children, width = '440px' 
             &#x2715;
           </button>
         </div>
-        <div style={{ padding: 24 }}>{children}</div>
+        <div style={{ padding: 24, overflowY: 'auto', flex: 1 }}>{children}</div>
       </div>
     </div>
   )

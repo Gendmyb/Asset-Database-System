@@ -52,7 +52,11 @@ api.interceptors.response.use(
     const originalRequest = error.config
 
     // 不要对 refresh/login 请求本身重试
-    if (originalRequest.url === '/auth/refresh' || originalRequest.url === '/auth/login') {
+    // /auth/login 的 401 只 reject，让 Login 组件显示错误提示
+    if (originalRequest.url === '/auth/login') {
+      return Promise.reject(error)
+    }
+    if (originalRequest.url === '/auth/refresh') {
       clearAuth()
       return Promise.reject(error)
     }

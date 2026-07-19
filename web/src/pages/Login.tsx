@@ -67,7 +67,7 @@ export default function Login() {
               onChange={e => setUsername(e.target.value)}
               style={{
                 width:'100%', padding:'8px 12px', borderRadius:6, border:'1px solid var(--border-default)',
-                background:'rgba(255,255,255,0.02)', color:'var(--text-primary)', fontSize:14,
+                background:'rgba(255,255,255,0.06)', color:'var(--text-primary)', fontSize:14,
                 outline:'none', fontFamily:'inherit'
               }}
               placeholder="admin"
@@ -83,7 +83,7 @@ export default function Login() {
               onChange={e => setPassword(e.target.value)}
               style={{
                 width:'100%', padding:'8px 12px', borderRadius:6, border:'1px solid var(--border-default)',
-                background:'rgba(255,255,255,0.02)', color:'var(--text-primary)', fontSize:14,
+                background:'rgba(255,255,255,0.06)', color:'var(--text-primary)', fontSize:14,
                 outline:'none', fontFamily:'inherit'
               }}
               placeholder="admin123"

@@ -12,11 +12,17 @@ const FIELD_STYLE: React.CSSProperties = {
   padding: '7px 10px',
   borderRadius: 5,
   border: '1px solid var(--border-default)',
-  background: 'rgba(255,255,255,0.02)',
+  background: 'rgba(255,255,255,0.06)',
   color: 'var(--text-primary)',
   fontSize: 13,
   outline: 'none',
   fontFamily: 'inherit',
+}
+
+const SELECT_STYLE: React.CSSProperties = {
+  ...FIELD_STYLE,
+  cursor: 'pointer',
+  background: 'rgba(255,255,255,0.06)',
 }
 
 const SECTION_TITLE: React.CSSProperties = {
@@ -137,7 +143,7 @@ export default function CreateAssetModal({
           <FormField label="资产类型">
             <select
               {...register('type_id')}
-              style={{ ...FIELD_STYLE, cursor: 'pointer' }}
+              style={SELECT_STYLE}
             >
               {typeOptions.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -175,7 +181,7 @@ export default function CreateAssetModal({
           <FormField label="折旧方法">
             <select
               {...register('depreciation_method')}
-              style={{ ...FIELD_STYLE, cursor: 'pointer' }}
+              style={SELECT_STYLE}
             >
               <option value="">不折旧</option>
               <option value="straight_line">直线法</option>
@@ -207,7 +213,7 @@ export default function CreateAssetModal({
           <FormField label="管理人">
             <select
               {...register('managed_by')}
-              style={{ ...FIELD_STYLE, cursor: 'pointer' }}
+              style={SELECT_STYLE}
             >
               <option value="">选择用户...</option>
               {userOptions.map((o) => (
@@ -220,7 +226,7 @@ export default function CreateAssetModal({
           <FormField label="位置">
             <select
               {...register('location_id')}
-              style={{ ...FIELD_STYLE, cursor: 'pointer' }}
+              style={SELECT_STYLE}
             >
               <option value="">选择位置...</option>
               {locationOptions.map((o) => (

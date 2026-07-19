@@ -99,3 +99,17 @@
 | D | npm run build（tsc+vite）通过 | ✅ | | 156 modules, 315KB (99KB gzip)，+recharts 738KB chunk | 2026-07-19 |
 | F | 后端: 007迁移(maintenance_orders)+service+handler+8路由 | ✅ | | go build/test/vet 全通过 | 2026-07-19 |
 | F | 前端: MaintenancePage+AssetDetailPanel报修报废+Badge扩展+ConfirmDialog children | ✅ | | tsc 0 errors, vite build 成功 | 2026-07-19 |
+
+## 部署后修复 (K)
+
+| 任务 | 状态 | 说明 | 时间 |
+|---|---|---|---|
+| 后端: audit.QueryHistory 变量名 bug (tx.Query → q.Query) | ✅ | 导致编译失败，recorder.go:104 | 2026-07-19 |
+| 后端: 自研 migration runner 替换 goose CLI | ✅ | embed+EXCLUSIVE锁+schema_migrations | 2026-07-19 |
+| 后端: SPA fallback 重定向循环修复 | ✅ | http.FS → http.FileServer + fs.Sub | 2026-07-19 |
+| 部署: 本地 deploy script (setup-and-run.sh) | ✅ | PostgreSQL + Go 二进制一键启动 | 2026-07-19 |
+| 前端: 登录密码错误 404 闪白页修复 | ✅ | client.ts login 401 不再触发 clearAuth() | 2026-07-19 |
+| 前端: 资产新建表单透明度过低 | ✅ | rgba(255,255,255,0.02) → 0.06 | 2026-07-19 |
+| 前端: 资产新建窗口溢出 → 可滚动 | ✅ | Modal max-height:90vh + overflow-y:auto | 2026-07-19 |
+| 构建: 前端 tsc+vite + 后端 go build 验证 | ✅ | 756 modules + 27MB 静态二进制 | 2026-07-19 |
+| Git: 全部修改提交推送 GitHub | ✅ | 主分支，含 deploy script | 2026-07-19 |
