@@ -29,13 +29,20 @@ cd Asset-Database-System
 docker compose up -d --build
 # 访问 http://localhost:8080
 ```
-默认账号：**admin** / **admin123**
+默认账号：**admin** / **admin123**（首次登录后请立即改密）
+
+**源码本地部署**（一键脚本，含 PostgreSQL 初始化）：
+```bash
+bash setup-and-run.sh
+```
 
 **DEMO 模式**（免 PostgreSQL，仅演示基础功能）：
 ```bash
 cd assetserver && DEMO=true go run ./cmd/api-server
 # 浏览器打开 http://localhost:8080
 ```
+
+> 完整部署流程（三种方式、环境变量、反向代理 HTTPS、备份恢复、升级与排障）见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
 
 ## 技术栈
 
@@ -73,9 +80,10 @@ cd assetserver && DEMO=true go run ./cmd/api-server
 
 ## 运维
 
-备份恢复、升级、管理员找回等见 [docs/runbook.md](docs/runbook.md)。
+部署手册（推荐先读）：[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+备份恢复、升级、管理员找回等速查：[docs/runbook.md](docs/runbook.md)。
 
 ## 项目状态
 
-v0.2.0 — 核心业务闭环完成，生产可用性待验证。
+v0.2.0 — 核心业务闭环完成；此后持续迭代（亮色主题、用户软删除、报废门控、移除采购中状态、领用列表显示名称、SPA 路由 404 修复等，详见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）。
 实施规划见 [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)。

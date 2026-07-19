@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 未发布 (2026-07-19 之后)
+
+### 体验与门控
+- 前端 UI 改为**亮色主题**（Linear 风格），并修复 `index.css` 未被 `main.tsx` 引入导致生产构建样式全丢的根因。
+- 补齐 **viewer 角色对资产操作按钮的门控**（此前仅门控 admin+）；新增 **Webhooks 管理页**（此前仅 API）。
+
+### 业务修复
+- 资产创建重号 (SQLSTATE 23505)：`NextAssetTag`/`NextBatchTags` 改用 `doc_sequences` 原子取号 + 已存在最大编号回填，兼容软删除遗留编号；支持自定义资产编号。
+- 盘点报告导出 500：`COALESCE` 修复 NULL 字符串扫描。
+- **用户软删除**（保留记录）：`users` 表加 `deleted_at`，`DELETE /admin/users/:id` 仅置位，行保留以维系审计/领用历史；禁止删自己。
+- **报废门控**：移除生命周期转换直达 `retirement` 的无弹窗旁路，报废统一走确认弹窗；有活跃领用（领用/借用中）时隐藏报废按钮并提示先归还。
+- **借用归还**：归还按钮对 `borrowed` 状态也显示，借用中资产可从详情页归还。
+- **移除「采购中」(procurement) 生命周期状态**：入库即进入 `deployment`，迁移 010 回填历史数据并收紧 CHECK。
+- **领用/借用列表显示名称**：`ListAssignments` JOIN `assets`+`users` 返回 `asset_name`/`asset_tag`/`assigned_to_name`，不再回退 UUID。
+
+### 部署/可靠性
+- 修复 **SPA 客户端路由直访/刷新返回 404**：`web.Handler()` 此前用裸 `http.FileServer` 无回退，直接访问 `/login`、`/assets/:id` 等返回 `404 page not found`；改为文件不存在时回退 `index.html`，`/api/*` 404 不受影响。
+- 新增 **部署手册** `docs/DEPLOYMENT.md`。
+
 ## v0.2.0 (2026-07-19) — 核心业务闭环完成
 
 ### Phase A: 止血

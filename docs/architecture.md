@@ -57,12 +57,12 @@ cmd/api-server/main.go           — 入口：配置→JWT→迁移→Webhook Di
 
 ## 数据模型（实际使用表）
 
-迁移文件：`migrations/001-009*.sql`，由 app 启动时自动执行。
+迁移文件：`migrations/001-010*.sql`，由 app 启动时自动执行。
 
 | 表 | 用途 |
 |---|---|
 | organizations | 组织（ltree 物化路径） |
-| users | 用户（bcrypt 密码、角色、状态） |
+| users | 用户（bcrypt 密码、角色、状态、`deleted_at` 软删除——删除即从列表/登录移除，行保留维系审计与领用历史） |
 | asset_types | 资产类型 |
 | assets | 核心资产表（含采购/折旧/报废字段） |
 | assignments | 领用/借用记录（type: permanent/temporary，部分唯一索引防重复） |
@@ -113,7 +113,7 @@ docker compose up -d
   ├─ postgres:16 (端口 5432)
   └─ app (端口 8080)
        ├─ Go 二进制 embed web/dist (React SPA)
-       ├─ NoRoute → index.html (SPA 路由回落)
-       ├─ 启动时自动执行迁移 (001-009*.sql)
+       ├─ NoRoute → 文件不存在时回退 index.html (SPA 客户端路由回落)
+       ├─ 启动时自动执行迁移 (001-010*.sql)
        └─ /healthz /readyz 健康检查
 ```
