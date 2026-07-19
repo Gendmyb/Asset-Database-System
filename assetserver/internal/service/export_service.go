@@ -191,9 +191,9 @@ func (s *ExportService) ExportStocktakeReportCSV(ctx context.Context, q reposito
 			COALESCE(at.name, ''),
 			COALESCE(l.name, ''),
 			COALESCE(a.status, ''),
-			si.result,
+			COALESCE(si.result, ''),
 			COALESCE(si.notes, ''),
-			COALESCE(u.username, si.checked_by::text),
+			COALESCE(u.username, si.checked_by::text, ''),
 			COALESCE(si.checked_at::text, '')
 		FROM assets.stocktake_items si
 		LEFT JOIN assets.assets a ON si.asset_id = a.id

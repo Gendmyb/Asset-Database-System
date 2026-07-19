@@ -15,6 +15,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// isDuplicateKeyErr 判断是否为唯一约束冲突 (SQLSTATE 23505)
+func isDuplicateKeyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "duplicate key") ||
+		strings.Contains(msg, "23505") ||
+		strings.Contains(msg, "unique constraint")
+}
+
 // AssetV2Handler Phase 2 资产处理器 (集成真实 Repository)
 type AssetV2Handler struct {
 	repo         *repository.AssetRepo
@@ -191,6 +202,7 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 
 	svcInput := service.CreateAssetInput{
 		Name:           input.Name,
+		AssetTag:       input.AssetTag,
 		TypeID:         input.TypeID,
 		OrgID:          orgID,
 		SerialNumber:   input.SerialNumber,
@@ -212,6 +224,10 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 
 	row, err := h.svc.CreateAsset(c.Request.Context(), h.pool, svcInput)
 	if err != nil {
+		if isDuplicateKeyErr(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "资产编号已存在，请更换或留空自动生成"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -304,6 +320,10 @@ func (h *AssetV2Handler) CreateAssetBatch(c *gin.Context) {
 
 	assets, err := h.svc.CreateAssetBatch(c.Request.Context(), h.pool, svcInput, input.Count)
 	if err != nil {
+		if isDuplicateKeyErr(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "资产编号冲突，请重试"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

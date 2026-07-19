@@ -39,6 +39,7 @@ type CreateAssetInput struct {
 	Name             string
 	TypeID           string
 	OrgID            string
+	AssetTag         string // 留空则自动生成
 	SerialNumber     *string
 	Manufacturer     *string
 	Model            *string
@@ -64,10 +65,13 @@ func (s *AssetService) CreateAsset(ctx context.Context, pool *pgxpool.Pool, inpu
 	}
 	defer tx.Rollback(ctx)
 
-	// 自动生成编号
-	tag, err := s.settingsRepo.NextAssetTag(ctx, tx, input.OrgID)
-	if err != nil {
-		return nil, fmt.Errorf("generate tag: %w", err)
+	// 编号: 用户提供则用用户的, 否则自动生成
+	tag := input.AssetTag
+	if tag == "" {
+		tag, err = s.settingsRepo.NextAssetTag(ctx, tx, input.OrgID)
+		if err != nil {
+			return nil, fmt.Errorf("generate tag: %w", err)
+		}
 	}
 
 	now := time.Now()
