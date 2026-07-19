@@ -240,8 +240,8 @@ func (s *ExportService) ExportStocktakeReportCSV(ctx context.Context, q reposito
 // exportAssetsRow 资产导出行的统一中间结构 (CSV/XLSX 复用)
 type exportAssetsRow struct {
 	Tag, Name, TypeName, SN, Mfr, Model, Loc, Status, Lifecycle string
-	PurchasePrice, NBV                                           float64
-	ManagedBy                                                    string
+	PurchasePrice, NBV                                          float64
+	ManagedBy                                                   string
 }
 
 // queryExportAssets 执行资产导出查询，返回中间行。

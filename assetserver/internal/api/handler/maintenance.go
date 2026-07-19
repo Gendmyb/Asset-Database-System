@@ -15,8 +15,10 @@ import (
 
 // MaintenanceHandler 维修/保养工单处理器
 type MaintenanceHandler struct {
-	svc  *service.MaintenanceService
-	pool *pgxpool.Pool
+	svc          *service.MaintenanceService
+	pool         *pgxpool.Pool
+	settingsRepo *repository.SettingsRepo
+	approvalSvc  *service.ApprovalService
 }
 
 // NewMaintenanceHandler 创建 MaintenanceHandler
@@ -24,29 +26,36 @@ func NewMaintenanceHandler(svc *service.MaintenanceService, pool *pgxpool.Pool) 
 	return &MaintenanceHandler{svc: svc, pool: pool}
 }
 
+// WithApproval 注入审批服务与设置仓库, 启用维修/报废审批门
+func (h *MaintenanceHandler) WithApproval(settingsRepo *repository.SettingsRepo, approvalSvc *service.ApprovalService) *MaintenanceHandler {
+	h.settingsRepo = settingsRepo
+	h.approvalSvc = approvalSvc
+	return h
+}
+
 // maintenanceOrderResponse 工单响应 (JSON 序列化友好)
 type maintenanceOrderResponse struct {
-	ID          string     `json:"id"`
-	OrderNo     string     `json:"order_no"`
-	AssetID     string     `json:"asset_id"`
-	OrgID       string     `json:"org_id"`
-	Category    string     `json:"category"`
-	Status      string     `json:"status"`
-	Title       string     `json:"title"`
-	Description *string    `json:"description,omitempty"`
-	ReportedBy  string     `json:"reported_by"`
-	Assignee    *string    `json:"assignee,omitempty"`
-	Vendor      *string    `json:"vendor,omitempty"`
-	Cost        *float64   `json:"cost,omitempty"`
-	Resolution  *string    `json:"resolution,omitempty"`
-	PrevStatus  string     `json:"prev_status"`
-	StartedAt   *string    `json:"started_at,omitempty"`
-	FinishedAt  *string    `json:"finished_at,omitempty"`
-	CreatedAt   string     `json:"created_at"`
-	UpdatedAt   string     `json:"updated_at"`
-	Version     int        `json:"version"`
-	AssetName   *string    `json:"asset_name,omitempty"`
-	AssetTag    *string    `json:"asset_tag,omitempty"`
+	ID          string   `json:"id"`
+	OrderNo     string   `json:"order_no"`
+	AssetID     string   `json:"asset_id"`
+	OrgID       string   `json:"org_id"`
+	Category    string   `json:"category"`
+	Status      string   `json:"status"`
+	Title       string   `json:"title"`
+	Description *string  `json:"description,omitempty"`
+	ReportedBy  string   `json:"reported_by"`
+	Assignee    *string  `json:"assignee,omitempty"`
+	Vendor      *string  `json:"vendor,omitempty"`
+	Cost        *float64 `json:"cost,omitempty"`
+	Resolution  *string  `json:"resolution,omitempty"`
+	PrevStatus  string   `json:"prev_status"`
+	StartedAt   *string  `json:"started_at,omitempty"`
+	FinishedAt  *string  `json:"finished_at,omitempty"`
+	CreatedAt   string   `json:"created_at"`
+	UpdatedAt   string   `json:"updated_at"`
+	Version     int      `json:"version"`
+	AssetName   *string  `json:"asset_name,omitempty"`
+	AssetTag    *string  `json:"asset_tag,omitempty"`
 }
 
 func moToResponse(mo *repository.MaintenanceOrder) maintenanceOrderResponse {
@@ -105,6 +114,33 @@ func (h *MaintenanceHandler) CreateMaintenanceOrder(c *gin.Context) {
 
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
+
+	// 审批门: 若启用维修审批, 创建 pending 审批请求
+	if h.approvalSvc != nil && service.IsApprovalEnabled(c.Request.Context(), h.settingsRepo, h.pool, "maintenance") {
+		id, err := h.approvalSvc.Create(c.Request.Context(), service.CreateInput{
+			ResourceType: service.ApprovalMaintenance,
+			ResourceID:   input.AssetID,
+			RequesterID:  userID,
+			OrgID:        orgID,
+			Payload: map[string]interface{}{
+				"category":    input.Category,
+				"title":       input.Title,
+				"description": input.Description,
+				"assignee":    input.Assignee,
+				"vendor":      input.Vendor,
+			},
+		})
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{
+			"approval_id": id,
+			"asset_id":    input.AssetID,
+			"status":      "pending_approval",
+		}})
+		return
+	}
 
 	mo, err := h.svc.CreateOrder(c.Request.Context(), h.pool, orgID, service.CreateOrderInput{
 		AssetID:     input.AssetID,
@@ -233,6 +269,29 @@ func (h *MaintenanceHandler) RetireAsset(c *gin.Context) {
 
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
+
+	// 审批门: 若启用报废审批, 创建 pending 审批请求
+	if h.approvalSvc != nil && service.IsApprovalEnabled(c.Request.Context(), h.settingsRepo, h.pool, "retirement") {
+		id, err := h.approvalSvc.Create(c.Request.Context(), service.CreateInput{
+			ResourceType: service.ApprovalRetirement,
+			ResourceID:   assetID,
+			RequesterID:  userID,
+			OrgID:        orgID,
+			Payload: map[string]string{
+				"reason": input.Reason,
+			},
+		})
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{
+			"approval_id": id,
+			"asset_id":    assetID,
+			"status":      "pending_approval",
+		}})
+		return
+	}
 
 	if err := h.svc.RetireAsset(c.Request.Context(), h.pool, orgID, assetID, input.Reason, userID); err != nil {
 		code := http.StatusInternalServerError

@@ -90,6 +90,13 @@ export default function AssetDetailPanel({
   const [showQRModal, setShowQRModal] = useState(false)
   const [qrUrl, setQrUrl] = useState('')
 
+  // --- G8: 外设挂载 (parent / children) state ---
+  const [parentAsset, setParentAsset] = useState<assetsApi.Asset | null>(null)
+  const [children, setChildren] = useState<assetsApi.Asset[]>([])
+  const [showMountModal, setShowMountModal] = useState(false)
+  const [mountParentTag, setMountParentTag] = useState('')
+  const [mountError, setMountError] = useState('')
+
   useEffect(() => {
     setForm({
       name: asset.name,
@@ -102,6 +109,24 @@ export default function AssetDetailPanel({
     setError('')
     setAssignedUser(null)
   }, [asset.id])
+
+  // G8: 拉取外设树 (parent + children)
+  useEffect(() => {
+    let cancelled = false
+    assetsApi.getDetail(asset.id)
+      .then((detail) => {
+        if (cancelled) return
+        setParentAsset(detail.parent)
+        setChildren(detail.children || [])
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setParentAsset(null)
+          setChildren([])
+        }
+      })
+    return () => { cancelled = true }
+  }, [asset.id, asset.version])
 
   // Fetch assigned user
   useEffect(() => {
@@ -202,6 +227,38 @@ export default function AssetDetailPanel({
       sonnerToast.success('资产已报废')
       setShowRetireDialog(false)
       setRetireReason('')
+      onRefresh(asset.id)
+      queryClient.invalidateQueries({ queryKey: ['assets'] })
+    },
+    onError: (err) => sonnerToast.error(getApiError(err)),
+  })
+
+  // G8: 挂载到父资产 (按 asset_tag 查找)
+  const mountMutation = useMutation({
+    mutationFn: (parentTag: string) =>
+      // 先按 tag 查到父资产 ID, 再挂载
+      assetsApi.list({ search: parentTag, limit: 20 }).then((res) => {
+        const hit = (res.data || []).find((a) => a.asset_tag === parentTag)
+        if (!hit) throw new Error('未找到该编号的资产')
+        if (hit.id === asset.id) throw new Error('不能挂载到自身')
+        return assetsApi.mount(asset.id, hit.id)
+      }),
+    onSuccess: () => {
+      sonnerToast.success('挂载成功')
+      setShowMountModal(false)
+      setMountParentTag('')
+      setMountError('')
+      onRefresh(asset.id)
+      queryClient.invalidateQueries({ queryKey: ['assets'] })
+    },
+    onError: (err) => setMountError(getApiError(err)),
+  })
+
+  // G8: 卸载
+  const unmountMutation = useMutation({
+    mutationFn: () => assetsApi.unmount(asset.id),
+    onSuccess: () => {
+      sonnerToast.success('已卸载')
       onRefresh(asset.id)
       queryClient.invalidateQueries({ queryKey: ['assets'] })
     },
@@ -534,6 +591,111 @@ export default function AssetDetailPanel({
         )}
       </div>
 
+      {/* G8: 外设挂载 (parent / children) */}
+      <div style={{ marginTop: 24 }}>
+        <h4
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: 'var(--text-secondary)',
+            textTransform: 'uppercase',
+            letterSpacing: '0.5px',
+            marginBottom: 12,
+          }}
+        >
+          外设挂载
+        </h4>
+
+        {/* 挂载于 (parent) */}
+        <div
+          style={{
+            padding: '10px 14px',
+            borderRadius: 8,
+            background: 'rgba(94,106,210,0.05)',
+            border: '1px solid var(--border-subtle)',
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ fontSize: 11, color: 'var(--text-quaternary)', marginBottom: 4 }}>
+            挂载于
+          </div>
+          {parentAsset ? (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+                  {parentAsset.name}
+                </div>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  {parentAsset.asset_tag}
+                </div>
+              </div>
+              {canManage && (
+                <Button
+                  variant="secondary"
+                  onClick={() => unmountMutation.mutate()}
+                  loading={unmountMutation.isPending}
+                >
+                  卸载
+                </Button>
+              )}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--text-quaternary)' }}>
+              未挂载到任何资产
+              {canManage && (
+                <Button
+                  variant="secondary"
+                  style={{ marginLeft: 8, padding: '2px 10px', fontSize: 12 }}
+                  onClick={() => { setMountParentTag(''); setMountError(''); setShowMountModal(true) }}
+                >
+                  挂载
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* 外设/子资产 (children) */}
+        <div
+          style={{
+            padding: '10px 14px',
+            borderRadius: 8,
+            background: 'rgba(0,0,0,0.02)',
+            border: '1px solid var(--border-subtle)',
+          }}
+        >
+          <div style={{ fontSize: 11, color: 'var(--text-quaternary)', marginBottom: 6 }}>
+            外设 / 子资产 ({children.length})
+          </div>
+          {children.length === 0 ? (
+            <div style={{ fontSize: 12, color: 'var(--text-quaternary)' }}>无子资产</div>
+          ) : (
+            children.map((ch) => (
+              <div
+                key={ch.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '4px 0',
+                  borderBottom: '1px solid var(--border-subtle)',
+                }}
+              >
+                <div>
+                  <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>
+                    {ch.name}
+                  </span>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: 'var(--text-tertiary)', marginLeft: 8 }}>
+                    {ch.asset_tag}
+                  </span>
+                </div>
+                <Badge status={ch.status} />
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
       {/* Actions: Assign / Borrow / Release (manager+) */}
       {canManage && (
         <div style={{ marginTop: 24 }}>
@@ -774,6 +936,45 @@ export default function AssetDetailPanel({
           <div style={{ fontSize: 11, color: 'var(--text-quaternary)', marginTop: 4 }}>
             扫码可快速定位资产 (内容为资产编号)
           </div>
+        </div>
+      </Modal>
+
+      {/* G8: 挂载到父资产弹窗 */}
+      <Modal
+        open={showMountModal}
+        onClose={() => setShowMountModal(false)}
+        title="挂载到父资产"
+        width="420px"
+      >
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 12 }}>
+          输入父资产的资产编号 (asset_tag), 将当前资产作为其外设/子资产挂载。
+        </div>
+        <Input
+          label="父资产编号"
+          placeholder="例如 ASSET-0001"
+          value={mountParentTag}
+          onChange={(e) => setMountParentTag(e.target.value)}
+        />
+        {mountError && (
+          <div style={{ marginTop: 8, fontSize: 12, color: '#dc2626' }}>{mountError}</div>
+        )}
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 16 }}>
+          <Button variant="secondary" type="button" onClick={() => setShowMountModal(false)}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            loading={mountMutation.isPending}
+            onClick={() => {
+              if (!mountParentTag.trim()) {
+                setMountError('请输入父资产编号')
+                return
+              }
+              mountMutation.mutate(mountParentTag.trim())
+            }}
+          >
+            确认挂载
+          </Button>
         </div>
       </Modal>
     </Drawer>

@@ -13,11 +13,11 @@ import (
 // SummaryReport 汇总报表
 type SummaryReport struct {
 	TotalAssets        int64            `json:"total_assets"`
-	TotalPurchasePrice float64           `json:"total_purchase_price"`
-	TotalNetBookValue  float64           `json:"total_net_book_value"`
-	ByStatus           []GroupCount      `json:"by_status"`
-	ByAssetType        []AssetTypeGroup  `json:"by_asset_type"`
-	ByLocation         []GroupCount      `json:"by_location"`
+	TotalPurchasePrice float64          `json:"total_purchase_price"`
+	TotalNetBookValue  float64          `json:"total_net_book_value"`
+	ByStatus           []GroupCount     `json:"by_status"`
+	ByAssetType        []AssetTypeGroup `json:"by_asset_type"`
+	ByLocation         []GroupCount     `json:"by_location"`
 }
 
 // GroupCount 通用分组统计

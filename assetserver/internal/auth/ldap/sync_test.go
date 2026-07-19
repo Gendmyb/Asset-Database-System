@@ -64,7 +64,7 @@ func TestRunSyncOnce_NoPool(t *testing.T) {
 func TestSanitizeLTree(t *testing.T) {
 	cases := map[string]string{
 		// 中文按 UTF-8 字节数替换为下划线 (技术部 = 3 字符 × 3 字节 = 9 下划线)
-		"技术部":        "_________",
+		"技术部":         "_________",
 		"Engineering": "Engineering",
 		"R&D":         "R_D",
 		"":            "dept",

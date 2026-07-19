@@ -7,7 +7,8 @@
 //   - 同步结果摘要写入 audit_log (不含密码)。
 //
 // 调度: 暴露 RunSyncOnce(ctx) 供 G4 调度器或 /admin/ldap/sync 手动触发;
-//       本包不自建 ticker, 避免与 G4 的 internal/scheduler/ 抢目录。
+//
+//	本包不自建 ticker, 避免与 G4 的 internal/scheduler/ 抢目录。
 package ldap
 
 import (

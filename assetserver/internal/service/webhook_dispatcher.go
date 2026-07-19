@@ -14,9 +14,9 @@ import (
 
 // WebhookDispatcher subscribes to event bus and delivers webhooks asynchronously
 type WebhookDispatcher struct {
-	pool    *pgxpool.Pool
-	repo    *repository.WebhookRepo
-	engine  *webhook.Engine
+	pool   *pgxpool.Pool
+	repo   *repository.WebhookRepo
+	engine *webhook.Engine
 }
 
 // NewWebhookDispatcher creates a new dispatcher

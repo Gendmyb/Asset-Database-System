@@ -41,6 +41,8 @@ type AssetRow struct {
 	ManagedBy          *string
 	RetiredAt          *time.Time
 	RetireReason       *string
+	// Wave 2 G8: 外设挂载 — 父资产 ID (NULL 表示无父资产)
+	ParentAssetID *string
 }
 
 // AssetRepo 资产仓库 (无状态 — DBTX 由调用方传入)
@@ -60,6 +62,9 @@ type AssetFilter struct {
 	Manufacturer string
 	Cursor       string
 	Limit        int
+	// Wave 2 G9: 行级数据权限范围。
+	// nil 或零值 (Mode=ScopeOrg) 时回退到 OrgID + "org_id = $N" (历史行为)。
+	Scope OrgScope
 }
 
 // List 游标分页查询 (支持全文搜索 + 多条件过滤)
@@ -68,13 +73,20 @@ func (r *AssetRepo) List(ctx context.Context, q DBTX, f AssetFilter) ([]AssetRow
 		f.Limit = 50
 	}
 
+	// G9: 行级数据权限 — 优先使用 Scope (部门级可见范围), 否则回退到 OrgID (组织级, 历史行为)
+	scope := f.Scope
+	if scope.OrgID == "" {
+		scope.OrgID = f.OrgID
+	}
+	orgClause, orgArgs := scope.Clause(1)
+
 	query := `SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
 		lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
 		purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
-		useful_life_months, salvage_value, managed_by, retired_at, retire_reason
-		FROM assets.assets WHERE deleted_at IS NULL AND org_id = $1`
-	args := []interface{}{f.OrgID}
-	argIdx := 2
+		useful_life_months, salvage_value, managed_by, retired_at, retire_reason, parent_asset_id
+		FROM assets.assets WHERE deleted_at IS NULL AND ` + orgClause
+	args := orgArgs
+	argIdx := 1 + len(orgArgs)
 
 	// 全文搜索优先，回退到 ILIKE
 	if f.Search != "" {
@@ -140,7 +152,7 @@ func (r *AssetRepo) List(ctx context.Context, q DBTX, f AssetFilter) ([]AssetRow
 			&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
 			&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
 			&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
-			&a.ManagedBy, &a.RetiredAt, &a.RetireReason); err != nil {
+			&a.ManagedBy, &a.RetiredAt, &a.RetireReason, &a.ParentAssetID); err != nil {
 			return nil, "", false, fmt.Errorf("scan asset: %w", err)
 		}
 		assets = append(assets, a)
@@ -181,7 +193,7 @@ func (r *AssetRepo) GetByID(ctx context.Context, q DBTX, id string, orgID string
 		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
 		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
 		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
-		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason, parent_asset_id
 		 FROM assets.assets WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`, id, orgID,
 	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 		&a.SerialNumber, &a.Manufacturer, &a.Model,
@@ -189,7 +201,7 @@ func (r *AssetRepo) GetByID(ctx context.Context, q DBTX, id string, orgID string
 		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
 		&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
 		&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
-		&a.ManagedBy, &a.RetiredAt, &a.RetireReason)
+		&a.ManagedBy, &a.RetiredAt, &a.RetireReason, &a.ParentAssetID)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("asset not found")
 	}
@@ -199,14 +211,135 @@ func (r *AssetRepo) GetByID(ctx context.Context, q DBTX, id string, orgID string
 	return &a, nil
 }
 
-// GetByTag 按 asset_tag + org_id 获取单个资产 (用于 QR 码生成等)
+// GetByIDScoped 按 OrgScope 过滤获取单个资产 (G9 部门级可见范围)。
+// scope.Mode=ScopeOrg 时等价于 GetByID(ctx, q, id, scope.OrgID)。
+func (r *AssetRepo) GetByIDScoped(ctx context.Context, q DBTX, id string, scope OrgScope) (*AssetRow, error) {
+	orgClause, orgArgs := scope.Clause(2)
+	query := `SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
+		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
+		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason, parent_asset_id
+		 FROM assets.assets WHERE id = $1 AND ` + orgClause + ` AND deleted_at IS NULL`
+
+	var a AssetRow
+	args := append([]interface{}{id}, orgArgs...)
+	err := q.QueryRow(ctx, query, args...).Scan(
+		&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
+		&a.SerialNumber, &a.Manufacturer, &a.Model,
+		&a.LifecycleState, &a.Status, &a.Properties,
+		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
+		&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
+		&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
+		&a.ManagedBy, &a.RetiredAt, &a.RetireReason, &a.ParentAssetID)
+	if err == pgx.ErrNoRows {
+		return nil, fmt.Errorf("asset not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get asset scoped: %w", err)
+	}
+	return &a, nil
+}
+
+// GetChildren 获取某资产的直接子资产 (外设列表), 按 OrgScope 过滤防 IDOR。
+func (r *AssetRepo) GetChildren(ctx context.Context, q DBTX, parentID string, scope OrgScope) ([]AssetRow, error) {
+	orgClause, orgArgs := scope.Clause(2)
+	query := `SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
+		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
+		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason, parent_asset_id
+		 FROM assets.assets WHERE parent_asset_id = $1 AND ` + orgClause + ` AND deleted_at IS NULL
+		 ORDER BY created_at ASC`
+	args := append([]interface{}{parentID}, orgArgs...)
+
+	rows, err := q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("get children: %w", err)
+	}
+	defer rows.Close()
+
+	var out []AssetRow
+	for rows.Next() {
+		var a AssetRow
+		if err := rows.Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
+			&a.SerialNumber, &a.Manufacturer, &a.Model,
+			&a.LifecycleState, &a.Status, &a.Properties,
+			&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
+			&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
+			&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
+			&a.ManagedBy, &a.RetiredAt, &a.RetireReason, &a.ParentAssetID); err != nil {
+			return nil, fmt.Errorf("scan child: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// IsDescendant 检查 candidateID 是否是 ancestorID 的后代 (含自身), 用于 G8 防循环引用。
+// 沿 parent_asset_id 链向上遍历, 最多 64 层 (防恶意深链)。
+// 返回 true 表示 candidate 是 ancestor 的后代 (含自身), 此时禁止把 ancestor 挂到 candidate 下。
+func (r *AssetRepo) IsDescendant(ctx context.Context, q DBTX, ancestorID, candidateID, orgID string) (bool, error) {
+	if ancestorID == candidateID {
+		return true, nil
+	}
+	const maxDepth = 64
+	cur := candidateID
+	for i := 0; i < maxDepth; i++ {
+		if cur == "" {
+			return false, nil
+		}
+		var parent *string
+		err := q.QueryRow(ctx,
+			`SELECT parent_asset_id FROM assets.assets
+			 WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`, cur, orgID,
+		).Scan(&parent)
+		if err == pgx.ErrNoRows {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("walk parent chain: %w", err)
+		}
+		if parent == nil || *parent == "" {
+			return false, nil
+		}
+		if *parent == ancestorID {
+			return true, nil
+		}
+		cur = *parent
+	}
+	// 超过最大深度, 视为后代 (拒绝, 防御性)
+	return true, nil
+}
+
+// SetParent 设置/清除资产的父资产 (G8 挂载/卸载), 含 org_id 过滤防 IDOR。
+// parentID 为空串表示卸载 (置 NULL)。乐观锁: 需匹配 expectedVersion。
+func (r *AssetRepo) SetParent(ctx context.Context, q DBTX, id, orgID, parentID string, expectedVersion int) (*AssetRow, error) {
+	var arg interface{}
+	if parentID == "" {
+		arg = nil
+	} else {
+		arg = parentID
+	}
+	now := time.Now()
+	tag, err := q.Exec(ctx,
+		`UPDATE assets.assets SET parent_asset_id = $2, version = version + 1, updated_at = $3
+		 WHERE id = $1 AND org_id = $4 AND version = $5 AND deleted_at IS NULL`,
+		id, arg, now, orgID, expectedVersion,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("set parent: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, fmt.Errorf("version conflict or asset not found")
+	}
+	return r.GetByID(ctx, q, id, orgID)
+}
 func (r *AssetRepo) GetByTag(ctx context.Context, q DBTX, tag string, orgID string) (*AssetRow, error) {
 	var a AssetRow
 	err := q.QueryRow(ctx,
 		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
 		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
 		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
-		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason, parent_asset_id
 		 FROM assets.assets WHERE asset_tag = $1 AND org_id = $2 AND deleted_at IS NULL`, tag, orgID,
 	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 		&a.SerialNumber, &a.Manufacturer, &a.Model,
@@ -214,7 +347,7 @@ func (r *AssetRepo) GetByTag(ctx context.Context, q DBTX, tag string, orgID stri
 		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
 		&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
 		&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
-		&a.ManagedBy, &a.RetiredAt, &a.RetireReason)
+		&a.ManagedBy, &a.RetiredAt, &a.RetireReason, &a.ParentAssetID)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("asset not found")
 	}
@@ -230,13 +363,14 @@ func (r *AssetRepo) Create(ctx context.Context, q DBTX, a *AssetRow) error {
 		`INSERT INTO assets.assets (id, asset_tag, name, type_id, org_id, serial_number,
 		 manufacturer, model, lifecycle_state, status, properties, version, created_at, updated_at,
 		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
-		 useful_life_months, salvage_value, managed_by)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+		 useful_life_months, salvage_value, managed_by, parent_asset_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
 		a.ID, a.AssetTag, a.Name, a.TypeID, a.OrgID,
 		a.SerialNumber, a.Manufacturer, a.Model,
 		a.LifecycleState, a.Status, a.Properties, a.Version, a.CreatedAt, a.UpdatedAt,
 		a.PurchasePrice, a.PurchaseDate, a.Supplier, a.WarrantyUntil,
 		a.DepreciationMethod, a.UsefulLifeMonths, a.SalvageValue, a.ManagedBy,
+		a.ParentAssetID,
 	)
 	return err
 }
@@ -309,7 +443,7 @@ func (r *AssetRepo) LockForUpdate(ctx context.Context, q DBTX, id string, orgID 
 		`SELECT id, asset_tag, name, type_id, org_id, serial_number, manufacturer, model,
 		 lifecycle_state, status, properties, version, deleted_at, created_at, updated_at,
 		 purchase_price, purchase_date, supplier, warranty_until, depreciation_method,
-		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason
+		 useful_life_months, salvage_value, managed_by, retired_at, retire_reason, parent_asset_id
 		 FROM assets.assets WHERE id=$1 AND org_id=$2 AND deleted_at IS NULL FOR UPDATE`, id, orgID,
 	).Scan(&a.ID, &a.AssetTag, &a.Name, &a.TypeID, &a.OrgID,
 		&a.SerialNumber, &a.Manufacturer, &a.Model,
@@ -317,7 +451,7 @@ func (r *AssetRepo) LockForUpdate(ctx context.Context, q DBTX, id string, orgID 
 		&a.Version, &a.DeletedAt, &a.CreatedAt, &a.UpdatedAt,
 		&a.PurchasePrice, &a.PurchaseDate, &a.Supplier, &a.WarrantyUntil,
 		&a.DepreciationMethod, &a.UsefulLifeMonths, &a.SalvageValue,
-		&a.ManagedBy, &a.RetiredAt, &a.RetireReason)
+		&a.ManagedBy, &a.RetiredAt, &a.RetireReason, &a.ParentAssetID)
 	if err != nil {
 		return nil, fmt.Errorf("lock asset: %w", err)
 	}

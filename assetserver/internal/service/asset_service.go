@@ -18,10 +18,12 @@ import (
 
 // Sentinel errors
 var (
-	ErrAssetNotFound      = fmt.Errorf("asset not found")
-	ErrVersionConflict    = fmt.Errorf("version conflict")
-	ErrInvalidTransition  = fmt.Errorf("invalid lifecycle transition")
-	ErrAssetNotAvailable  = fmt.Errorf("asset not available for assignment")
+	ErrAssetNotFound     = fmt.Errorf("asset not found")
+	ErrVersionConflict   = fmt.Errorf("version conflict")
+	ErrInvalidTransition = fmt.Errorf("invalid lifecycle transition")
+	ErrAssetNotAvailable = fmt.Errorf("asset not available for assignment")
+	ErrInvalidParent     = fmt.Errorf("invalid parent asset")        // G8
+	ErrCycleDetected     = fmt.Errorf("parent would create a cycle") // G8
 )
 
 // AssetService 资产服务 (事务边界)
@@ -36,16 +38,16 @@ func NewAssetService(assetRepo *repository.AssetRepo, settingsRepo *repository.S
 
 // CreateAssetInput 创建资产输入
 type CreateAssetInput struct {
-	Name             string
-	TypeID           string
-	OrgID            string
-	AssetTag         string // 留空则自动生成
-	SerialNumber     *string
-	Manufacturer     *string
-	Model            *string
-	LifecycleState   string
-	Properties       []byte
-	ActorID          string // 操作人
+	Name           string
+	TypeID         string
+	OrgID          string
+	AssetTag       string // 留空则自动生成
+	SerialNumber   *string
+	Manufacturer   *string
+	Model          *string
+	LifecycleState string
+	Properties     []byte
+	ActorID        string // 操作人
 	// Phase E: 采购/折旧字段
 	PurchasePrice      *float64
 	PurchaseDate       *time.Time
@@ -55,6 +57,8 @@ type CreateAssetInput struct {
 	UsefulLifeMonths   *int
 	SalvageValue       float64
 	ManagedBy          *string
+	// Wave 2 G8: 父资产 (外设挂载); nil/空 表示无父资产
+	ParentAssetID *string
 }
 
 // CreateAsset 创建资产 (事务: 生成编号 + INSERT + audit_log)
@@ -82,6 +86,17 @@ func (s *AssetService) CreateAsset(ctx context.Context, pool *pgxpool.Pool, inpu
 		input.DepreciationMethod = "none"
 	}
 
+	// G8: 校验父资产 (存在性 + 同 org)。新建资产无后代, 无循环风险。
+	var parentAssetID *string
+	if input.ParentAssetID != nil && *input.ParentAssetID != "" {
+		pid := *input.ParentAssetID
+		// 父资产必须存在且属于同 org
+		if _, err := s.assetRepo.GetByID(ctx, tx, pid, input.OrgID); err != nil {
+			return nil, ErrInvalidParent
+		}
+		parentAssetID = &pid
+	}
+
 	row := &repository.AssetRow{
 		ID:             uuid.New().String(),
 		AssetTag:       tag,
@@ -106,6 +121,8 @@ func (s *AssetService) CreateAsset(ctx context.Context, pool *pgxpool.Pool, inpu
 		UsefulLifeMonths:   input.UsefulLifeMonths,
 		SalvageValue:       input.SalvageValue,
 		ManagedBy:          input.ManagedBy,
+		// G8
+		ParentAssetID: parentAssetID,
 	}
 
 	if err := s.assetRepo.Create(ctx, tx, row); err != nil {
@@ -393,6 +410,131 @@ func (s *AssetService) GetAsset(ctx context.Context, pool *pgxpool.Pool, id stri
 // ListAssets 列表查询 (非事务读)
 func (s *AssetService) ListAssets(ctx context.Context, pool *pgxpool.Pool, f repository.AssetFilter) ([]repository.AssetRow, string, bool, error) {
 	return s.assetRepo.List(ctx, pool, f)
+}
+
+// AssetDetail 资产详情 (含 G8 外设树: parent + children)
+type AssetDetail struct {
+	Asset    *repository.AssetRow
+	Parent   *repository.AssetRow
+	Children []repository.AssetRow
+}
+
+// GetAssetDetail 获取资产详情 + 外设树 (G8), 按 scope 过滤防 IDOR (G9)。
+func (s *AssetService) GetAssetDetail(ctx context.Context, pool *pgxpool.Pool, id string, scope repository.OrgScope) (*AssetDetail, error) {
+	asset, err := s.assetRepo.GetByIDScoped(ctx, pool, id, scope)
+	if err != nil {
+		return nil, ErrAssetNotFound
+	}
+	detail := &AssetDetail{Asset: asset}
+
+	if asset.ParentAssetID != nil && *asset.ParentAssetID != "" {
+		// 父资产用同 scope 查询 (部门级可见时, 跨部门父资产不可见 → 视为无父)
+		parent, err := s.assetRepo.GetByIDScoped(ctx, pool, *asset.ParentAssetID, scope)
+		if err == nil {
+			detail.Parent = parent
+		}
+	}
+
+	children, err := s.assetRepo.GetChildren(ctx, pool, id, scope)
+	if err != nil {
+		return nil, fmt.Errorf("get children: %w", err)
+	}
+	if children == nil {
+		children = []repository.AssetRow{}
+	}
+	detail.Children = children
+	return detail, nil
+}
+
+// MountAsset 将 asset 挂载到 parentAsset 下 (G8)。事务: 校验 + UPDATE + audit。
+// 防循环: parent 不能是 asset 自身或其后代。
+func (s *AssetService) MountAsset(ctx context.Context, pool *pgxpool.Pool, assetID, parentAssetID, orgID, actorID string) (*repository.AssetRow, error) {
+	if assetID == parentAssetID {
+		return nil, ErrCycleDetected
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 悲观锁资产 (防并发挂载)
+	asset, err := s.assetRepo.LockForUpdate(ctx, tx, assetID, orgID)
+	if err != nil {
+		return nil, ErrAssetNotFound
+	}
+
+	// 父资产必须存在且同 org
+	parent, err := s.assetRepo.GetByID(ctx, tx, parentAssetID, orgID)
+	if err != nil {
+		return nil, ErrInvalidParent
+	}
+
+	// 防循环: parent 不能是 asset 的后代 (否则形成环)
+	isDesc, err := s.assetRepo.IsDescendant(ctx, tx, assetID, parent.ID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("cycle check: %w", err)
+	}
+	if isDesc {
+		return nil, ErrCycleDetected
+	}
+
+	updated, err := s.assetRepo.SetParent(ctx, tx, assetID, orgID, parentAssetID, asset.Version)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrVersionConflict, err)
+	}
+
+	if err := audit.Record(ctx, tx, audit.Entry{
+		TableName: "assets",
+		RecordID:  assetID,
+		Action:    audit.ActionUpdated,
+		OrgID:     orgID,
+		ActorID:   actorID,
+		NewValues: []byte(`{"parent_asset_id":"` + parentAssetID + `"}`),
+	}); err != nil {
+		return nil, fmt.Errorf("audit record: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return updated, nil
+}
+
+// UnmountAsset 解除资产的挂载 (G8, parent_asset_id 置 NULL)。
+func (s *AssetService) UnmountAsset(ctx context.Context, pool *pgxpool.Pool, assetID, orgID, actorID string) (*repository.AssetRow, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	asset, err := s.assetRepo.LockForUpdate(ctx, tx, assetID, orgID)
+	if err != nil {
+		return nil, ErrAssetNotFound
+	}
+
+	updated, err := s.assetRepo.SetParent(ctx, tx, assetID, orgID, "", asset.Version)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrVersionConflict, err)
+	}
+
+	if err := audit.Record(ctx, tx, audit.Entry{
+		TableName: "assets",
+		RecordID:  assetID,
+		Action:    audit.ActionUpdated,
+		OrgID:     orgID,
+		ActorID:   actorID,
+		NewValues: []byte(`{"parent_asset_id":null}`),
+	}); err != nil {
+		return nil, fmt.Errorf("audit record: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
+	}
+	return updated, nil
 }
 
 // contains 简易字符串包含检查

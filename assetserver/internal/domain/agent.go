@@ -28,14 +28,14 @@ func (s AgentStatus) IsDisabled() bool {
 // 对应架构文档 §6.2 Agent 注册与身份
 type CollectionAgent struct {
 	ID            string      `json:"id"`
-	AgentKey      string      `json:"agent_key"`   // 唯一标识 (硬件指纹 hash)
-	OrgID         string      `json:"org_id"`       // 所属组织
-	Hostname       string      `json:"hostname"`
-	OSType        string      `json:"os_type"`      // linux/darwin/windows
+	AgentKey      string      `json:"agent_key"` // 唯一标识 (硬件指纹 hash)
+	OrgID         string      `json:"org_id"`    // 所属组织
+	Hostname      string      `json:"hostname"`
+	OSType        string      `json:"os_type"` // linux/darwin/windows
 	OSVersion     string      `json:"os_version"`
 	Status        AgentStatus `json:"status"`
-	PublicKey     string      `json:"public_key"`   // Ed25519 公钥 (hex)
-	CertSerial    string      `json:"cert_serial"`  // 证书序列号
+	PublicKey     string      `json:"public_key"`  // Ed25519 公钥 (hex)
+	CertSerial    string      `json:"cert_serial"` // 证书序列号
 	LastHeartbeat *time.Time  `json:"last_heartbeat"`
 	IPAddress     string      `json:"ip_address"`
 	AgentVersion  string      `json:"agent_version"`
@@ -49,7 +49,7 @@ type CollectionAgent struct {
 type EnrollmentToken struct {
 	Token     string    `json:"token"`
 	OrgID     string    `json:"org_id"`
-	MaxUses   int       `json:"max_uses"`   // 最大使用次数 (0=无限)
+	MaxUses   int       `json:"max_uses"` // 最大使用次数 (0=无限)
 	UsedCount int       `json:"used_count"`
 	ExpiresAt time.Time `json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`

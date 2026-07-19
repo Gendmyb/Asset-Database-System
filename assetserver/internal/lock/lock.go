@@ -17,9 +17,9 @@ import (
 type LockType string
 
 const (
-	Optimistic LockType = "optimistic"  // 乐观锁 (~90%)
+	Optimistic  LockType = "optimistic"  // 乐观锁 (~90%)
 	Pessimistic LockType = "pessimistic" // 悲观锁 (~8%)
-	Advisory   LockType = "advisory"    // Advisory 锁 (~2%)
+	Advisory    LockType = "advisory"    // Advisory 锁 (~2%)
 )
 
 // ===================================================================

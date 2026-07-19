@@ -16,6 +16,38 @@ type Config struct {
 	Auth      AuthConfig
 	LDAP      LDAPConfig
 	Scheduler SchedulerConfig
+	Notify    NotifyConfig
+	// DataScope Wave 2 G9: 部门级行级数据权限开关
+	// 默认 off → 行为与历史一致 (仅按用户 org_id 过滤);
+	// on → 非超级管理员仅可见本部门及子孙部门数据, super_admin 全局可见。
+	DataScope DataScopeConfig
+}
+
+// DataScopeConfig 行级数据权限配置 (Wave 2 G9)
+type DataScopeConfig struct {
+	Department bool // DATA_SCOPE_DEPARTMENT=true 启用部门级可见范围
+}
+
+// NotifyConfig 通知渠道配置 (Wave 2 G6)
+// 所有渠道默认禁用; 未配置凭据/URL 时该渠道不可用, 系统行为与 v0.2.0 一致。
+type NotifyConfig struct {
+	Enable bool // 总开关; false 时 dispatcher 不投递任何通知
+
+	SMTP SMTPConfig
+
+	// 机器人 webhook URL (系统级, 单条); admin 也可在 notify_rules 里按事件配置
+	DingTalkWebhook string
+	WeComWebhook    string
+	FeishuWebhook   string
+}
+
+// SMTPConfig SMTP 邮件发送配置
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	User     string
+	Password string // 从环境变量 SMTP_PASSWORD 读取, 不入日志/审计
+	From     string // 发件人地址
 }
 
 // SchedulerConfig 调度器配置 (Wave 1 G4)
@@ -29,15 +61,15 @@ type SchedulerConfig struct {
 // LDAPConfig AD/LDAP 集成配置
 // 未配置 (Enable=false) 时系统以纯本地模式运行, 不依赖任何目录服务。
 type LDAPConfig struct {
-	Enable        bool   // 是否启用 LDAP 登录与同步
-	Host          string // AD/LDAP 主机 (e.g. ldap.corp.local)
-	Port          int    // 端口 (389 明文 / 636 LDAPS)
-	UseTLS        bool   // 启用 StartTLS (port 389 推荐)
-	UseSSL        bool   // LDAPS (port 636)
-	BindDN        string // 服务账号 DN (用于搜索用户/组, 禁止日志打印其密码)
-	BindPassword  string // 服务账号密码 (从环境变量 LDAP_BIND_PASSWORD 读取)
-	BaseDN        string // 搜索根 DN (e.g. dc=corp,dc=local)
-	UserFilter    string // 用户搜索过滤器, %s 占位符替换为用户名
+	Enable       bool   // 是否启用 LDAP 登录与同步
+	Host         string // AD/LDAP 主机 (e.g. ldap.corp.local)
+	Port         int    // 端口 (389 明文 / 636 LDAPS)
+	UseTLS       bool   // 启用 StartTLS (port 389 推荐)
+	UseSSL       bool   // LDAPS (port 636)
+	BindDN       string // 服务账号 DN (用于搜索用户/组, 禁止日志打印其密码)
+	BindPassword string // 服务账号密码 (从环境变量 LDAP_BIND_PASSWORD 读取)
+	BaseDN       string // 搜索根 DN (e.g. dc=corp,dc=local)
+	UserFilter   string // 用户搜索过滤器, %s 占位符替换为用户名
 	// 字段映射 (默认走 AD 标准属性名)
 	AttrUsername    string // sAMAccountName
 	AttrDisplayName string // displayName
@@ -118,8 +150,32 @@ func Load() (*Config, error) {
 			WarrantyDays: getEnvInt("SCHEDULER_WARRANTY_DAYS", 30),
 			EnableLDAP:   getEnvBool("SCHEDULER_LDAP_SYNC", false),
 		},
+		Notify: loadNotifyConfig(),
+		DataScope: DataScopeConfig{
+			Department: getEnvBool("DATA_SCOPE_DEPARTMENT", false),
+		},
 	}
 	return cfg, nil
+}
+
+// loadNotifyConfig 从环境变量读取通知配置
+// SMTP 主机未配置则 SMTP 渠道禁用; 任一机器人 URL 配置即启用该渠道。
+// 总开关 NOTIFY_ENABLE 默认 false (向后兼容: 关闭时系统行为与 v0.2.0 一致)。
+func loadNotifyConfig() NotifyConfig {
+	cfg := NotifyConfig{
+		Enable:          getEnvBool("NOTIFY_ENABLE", false),
+		DingTalkWebhook: getEnv("NOTIFY_DINGTALK_WEBHOOK", ""),
+		WeComWebhook:    getEnv("NOTIFY_WECOM_WEBHOOK", ""),
+		FeishuWebhook:   getEnv("NOTIFY_FEISHU_WEBHOOK", ""),
+		SMTP: SMTPConfig{
+			Host:     getEnv("SMTP_HOST", ""),
+			Port:     getEnvInt("SMTP_PORT", 587),
+			User:     getEnv("SMTP_USER", ""),
+			Password: os.Getenv("SMTP_PASSWORD"),
+			From:     getEnv("SMTP_FROM", ""),
+		},
+	}
+	return cfg
 }
 
 // loadSchedulerInterval 解析 env SCHEDULER_INTERVAL
@@ -143,19 +199,19 @@ func loadSchedulerInterval() time.Duration {
 // 任一关键字段缺失则 Enable=false (系统以纯本地模式运行)
 func loadLDAPConfig() LDAPConfig {
 	cfg := LDAPConfig{
-		Host:            getEnv("LDAP_HOST", ""),
-		Port:            getEnvInt("LDAP_PORT", 389),
-		UseTLS:          getEnvBool("LDAP_USE_TLS", false),
-		UseSSL:          getEnvBool("LDAP_USE_SSL", false),
-		BindDN:          getEnv("LDAP_BIND_DN", ""),
-		BindPassword:    os.Getenv("LDAP_BIND_PASSWORD"),
-		BaseDN:          getEnv("LDAP_BASE_DN", ""),
-		UserFilter:      getEnv("LDAP_USER_FILTER", "(&(objectClass=user)(sAMAccountName=%s))"),
-		AttrUsername:    getEnv("LDAP_ATTR_USERNAME", "sAMAccountName"),
-		AttrDisplayName: getEnv("LDAP_ATTR_DISPLAY_NAME", "displayName"),
-		AttrEmail:       getEnv("LDAP_ATTR_EMAIL", "mail"),
-		AttrDN:          getEnv("LDAP_ATTR_DN", "distinguishedName"),
-		AttrOrg:         getEnv("LDAP_ATTR_ORG", "department"),
+		Host:             getEnv("LDAP_HOST", ""),
+		Port:             getEnvInt("LDAP_PORT", 389),
+		UseTLS:           getEnvBool("LDAP_USE_TLS", false),
+		UseSSL:           getEnvBool("LDAP_USE_SSL", false),
+		BindDN:           getEnv("LDAP_BIND_DN", ""),
+		BindPassword:     os.Getenv("LDAP_BIND_PASSWORD"),
+		BaseDN:           getEnv("LDAP_BASE_DN", ""),
+		UserFilter:       getEnv("LDAP_USER_FILTER", "(&(objectClass=user)(sAMAccountName=%s))"),
+		AttrUsername:     getEnv("LDAP_ATTR_USERNAME", "sAMAccountName"),
+		AttrDisplayName:  getEnv("LDAP_ATTR_DISPLAY_NAME", "displayName"),
+		AttrEmail:        getEnv("LDAP_ATTR_EMAIL", "mail"),
+		AttrDN:           getEnv("LDAP_ATTR_DN", "distinguishedName"),
+		AttrOrg:          getEnv("LDAP_ATTR_ORG", "department"),
 		SyncDisabledOnly: getEnvBool("LDAP_SYNC_DISABLE_ONLY", false),
 	}
 	// 仅在关键字段齐全时启用 LDAP

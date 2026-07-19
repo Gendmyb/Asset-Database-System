@@ -8,16 +8,16 @@ import (
 
 // UserRow 用户
 type UserRow struct {
-	ID             string     `json:"id"`
-	Username       string     `json:"username"`
-	Role           string     `json:"role"`
-	Email          string     `json:"email,omitempty"`
-	OrgID          string     `json:"org_id"`
-	Status         string     `json:"status"`
-	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
-	MustChangePwd  bool       `json:"must_change_password"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID            string     `json:"id"`
+	Username      string     `json:"username"`
+	Role          string     `json:"role"`
+	Email         string     `json:"email,omitempty"`
+	OrgID         string     `json:"org_id"`
+	Status        string     `json:"status"`
+	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
+	MustChangePwd bool       `json:"must_change_password"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // UserRepo 用户仓库 (无状态 — DBTX 由调用方传入)
@@ -62,6 +62,19 @@ func (r *UserRepo) GetUsername(ctx context.Context, q DBTX, userID string) (stri
 		return "未知用户", nil
 	}
 	return username, nil
+}
+
+// ExistsByID 检查指定 ID 的用户存在且未软删除 (status='active' 且 deleted_at IS NULL)
+func (r *UserRepo) ExistsByID(ctx context.Context, q DBTX, userID string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM assets.users
+		 WHERE id = $1 AND status = 'active' AND deleted_at IS NULL)`, userID,
+	).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // EnsureSeedUsers 确保种子用户存在 (幂等)

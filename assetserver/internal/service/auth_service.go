@@ -49,8 +49,8 @@ type loginFailures struct {
 }
 
 type failEntry struct {
-	count     int
-	lockedAt  time.Time
+	count    int
+	lockedAt time.Time
 }
 
 // NewAuthService 创建认证服务
@@ -116,8 +116,8 @@ func (lf *loginFailures) resetFailures(username string) {
 
 // LoginResult 登录结果
 type LoginResult struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
 	User         UserInfo `json:"user"`
 }
 

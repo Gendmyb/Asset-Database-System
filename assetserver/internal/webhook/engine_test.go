@@ -195,11 +195,11 @@ func TestSSRFProtection(t *testing.T) {
 		"169.254.1.1",
 		"100.64.0.1",
 		"224.0.0.1",
-		"172.17.0.1",  // Docker
-		"172.18.0.1",  // Docker
-		"::1",         // IPv6 loopback
-		"fe80::1",     // IPv6 link-local
-		"fc00::1",     // IPv6 unique local
+		"172.17.0.1", // Docker
+		"172.18.0.1", // Docker
+		"::1",        // IPv6 loopback
+		"fe80::1",    // IPv6 link-local
+		"fc00::1",    // IPv6 unique local
 	}
 
 	publicIPs := []string{
@@ -296,10 +296,10 @@ func TestWebhookURLValidation(t *testing.T) {
 	}
 	invalidURLs := []string{
 		"http://hooks.slack.com/services/T00/B00/xxx", // not https
-		"https://evil.com/webhook",                     // not in allowlist
-		"https://hooks.slack.com.evil.com/webhook",     // subdomain bypass attempt
-		"",                                              // empty
-		"not-a-url",                                     // invalid
+		"https://evil.com/webhook",                    // not in allowlist
+		"https://hooks.slack.com.evil.com/webhook",    // subdomain bypass attempt
+		"",          // empty
+		"not-a-url", // invalid
 	}
 
 	for _, url := range validURLs {

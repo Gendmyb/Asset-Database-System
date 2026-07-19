@@ -120,10 +120,10 @@ func TestPreviewImport_Validation(t *testing.T) {
 		orgByPath:      map[string]string{"root.技术部": "org-tech"},
 	}
 	csv := "username,display_name,email,role,org_path,password\n" +
-		"jdoe,John,j@x.com,viewer,,\n" +       // ok
-		",,,viewer,,\n" +                       // empty username
-		"bob,Bob,bob,manager,,\n" +             // bad email
-		"carol,Carol,c@x.com,superuser,,\n" +   // bad role
+		"jdoe,John,j@x.com,viewer,,\n" + // ok
+		",,,viewer,,\n" + // empty username
+		"bob,Bob,bob,manager,,\n" + // bad email
+		"carol,Carol,c@x.com,superuser,,\n" + // bad role
 		"dave,Dave,d@x.com,viewer,root.缺失,,\n" // bad org
 	preview, err := s.PreviewImport(context.Background(), db, strings.NewReader(csv))
 	if err != nil {
@@ -247,9 +247,9 @@ func TestPreviewImport_DoesNotPersist(t *testing.T) {
 	}
 	tracked := &execCountDBTX{inner: inner}
 	csv := "username,display_name,email,role,org_path,password\n" +
-		"jdoe,John,j@x.com,viewer,,\n" +            // ok
-		",,,viewer,,\n" +                            // empty username (error row)
-		"bad,Bob,not-an-email,viewer,,\n" +          // bad email (error row)
+		"jdoe,John,j@x.com,viewer,,\n" + // ok
+		",,,viewer,,\n" + // empty username (error row)
+		"bad,Bob,not-an-email,viewer,,\n" + // bad email (error row)
 		"carol,Carol,c@x.com,viewer,root.技术部,,\n" // ok with org
 	preview, err := s.PreviewImport(context.Background(), tracked, strings.NewReader(csv))
 	if err != nil {

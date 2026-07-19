@@ -52,13 +52,13 @@ func (r *xlsxRows) Scan(dest ...interface{}) error {
 	}
 	return nil
 }
-func (r *xlsxRows) Close()                                        {}
-func (r *xlsxRows) Err() error                                    { return nil }
-func (r *xlsxRows) CommandTag() pgconn.CommandTag                 { return pgconn.CommandTag{} }
-func (r *xlsxRows) FieldDescriptions() []pgconn.FieldDescription  { return nil }
-func (r *xlsxRows) Values() ([]interface{}, error)                { return nil, nil }
-func (r *xlsxRows) RawValues() [][]byte                           { return nil }
-func (r *xlsxRows) Conn() *pgx.Conn                               { return nil }
+func (r *xlsxRows) Close()                                       {}
+func (r *xlsxRows) Err() error                                   { return nil }
+func (r *xlsxRows) CommandTag() pgconn.CommandTag                { return pgconn.CommandTag{} }
+func (r *xlsxRows) FieldDescriptions() []pgconn.FieldDescription { return nil }
+func (r *xlsxRows) Values() ([]interface{}, error)               { return nil, nil }
+func (r *xlsxRows) RawValues() [][]byte                          { return nil }
+func (r *xlsxRows) Conn() *pgx.Conn                              { return nil }
 
 // xlsxDBTX 模拟 repository.DBTX (Query 返回预设 Rows)
 type xlsxDBTX struct {

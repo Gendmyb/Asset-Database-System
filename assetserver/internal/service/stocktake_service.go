@@ -408,10 +408,10 @@ func (s *StocktakeService) CompletePlan(ctx context.Context, pool *pgxpool.Pool,
 
 // PlanReport 盘点报告
 type PlanReport struct {
-	Plan      *repository.StocktakePlan  `json:"plan"`
-	Summary   map[string]int64           `json:"summary"`
-	Total     int64                      `json:"total"`
-	Moved     []repository.StocktakeItem `json:"moved,omitempty"`
+	Plan    *repository.StocktakePlan  `json:"plan"`
+	Summary map[string]int64           `json:"summary"`
+	Total   int64                      `json:"total"`
+	Moved   []repository.StocktakeItem `json:"moved,omitempty"`
 }
 
 // GetPlanReport 获取盘点报告 (汇总 counts by result + moved 明细)

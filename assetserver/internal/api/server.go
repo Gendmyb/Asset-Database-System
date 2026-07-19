@@ -323,7 +323,7 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 	// API v1 (需要认证)
 	v1 := engine.Group("/api/v1")
 	v1.Use(middleware.Auth(km))
-	v1.Use(middleware.OrgScope())
+	v1.Use(middleware.OrgScope(cfg.DataScope.Department))
 
 	// /me — 当前用户 (viewer+)
 	v1.GET("/me", func(c *gin.Context) {

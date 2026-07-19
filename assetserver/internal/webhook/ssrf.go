@@ -11,7 +11,7 @@ var deniedCIDRs = []string{
 	// IPv4
 	"0.0.0.0/8",
 	"10.0.0.0/8",
-	"100.64.0.0/10",     // CGNAT
+	"100.64.0.0/10", // CGNAT
 	"127.0.0.0/8",
 	"169.254.0.0/16",
 	"172.16.0.0/12",
@@ -39,7 +39,17 @@ func init() {
 }
 
 // IsPrivateIP 检查 IP 是否在私有网段
+//
+// 先对 IPv4-mapped IPv6 地址 (::ffff:a.b.c.d/96) 归一化为 IPv4 形式,
+// 否则 mapped 地址 (如 ::ffff:127.0.0.1) 会绕过 IPv4 私有网段判定。
+// ip.To4() 对 mapped 地址返回 16 字节 IPv4 表示, 对纯 IPv6 返回 nil。
 func IsPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
 	for _, n := range deniedNetworks {
 		if n.Contains(ip) {
 			return true

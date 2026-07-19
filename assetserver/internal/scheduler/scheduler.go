@@ -29,8 +29,8 @@ import (
 
 // 事件类型 (扩展 event 包)
 const (
-	EventWarrantyExpiring = "asset.warranty_expiring"
-	EventWarrantyExpired  = "asset.warranty_expired"
+	EventWarrantyExpiring  = "asset.warranty_expiring"
+	EventWarrantyExpired   = "asset.warranty_expired"
 	EventAssignmentOverdue = "assignment.overdue"
 )
 
@@ -86,10 +86,10 @@ type LDAPSyncer interface {
 
 // Config 调度器配置
 type Config struct {
-	Interval        time.Duration // 扫描间隔; 0 表示不启动
-	WarrantyDays    int           // 质保临近到期阈值 (默认 30)
-	EnableLDAPSync  bool          // 是否在循环中调用 LDAP 同步
-	DefaultOrgID    string        // 系统级默认 org (审计/同步用)
+	Interval       time.Duration // 扫描间隔; 0 表示不启动
+	WarrantyDays   int           // 质保临近到期阈值 (默认 30)
+	EnableLDAPSync bool          // 是否在循环中调用 LDAP 同步
+	DefaultOrgID   string        // 系统级默认 org (审计/同步用)
 }
 
 // Scheduler 调度器

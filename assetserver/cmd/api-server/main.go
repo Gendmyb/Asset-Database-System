@@ -15,6 +15,7 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/crypto"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/db"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/event"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/notify"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/scheduler"
 	internalservice "github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
@@ -71,6 +72,17 @@ func main() {
 		whRepo := repository.NewWebhookRepo()
 		whDispatcher := internalservice.NewWebhookDispatcher(pool, whRepo)
 		go whDispatcher.Start(context.Background())
+
+		// Wave 2 G6: Start notify dispatcher (邮件 + 机器人 webhook)
+		notifyRepo := repository.NewNotifyRepo()
+		notifyNotifiers := []notify.Notifier{
+			notify.NewEmailNotifier(cfg.Notify.SMTP),
+			notify.NewDingTalkNotifier(cfg.Notify.DingTalkWebhook),
+			notify.NewWeComNotifier(cfg.Notify.WeComWebhook),
+			notify.NewFeishuNotifier(cfg.Notify.FeishuWebhook),
+		}
+		notifyDispatcher := internalservice.NewNotifyDispatcher(pool, notifyRepo, notifyNotifiers, cfg.Notify.Enable)
+		go notifyDispatcher.Start(context.Background())
 
 		// Wave 1 G4: 启动调度器 (到期提醒 + LDAP 同步)
 		startScheduler(cfg, pool)

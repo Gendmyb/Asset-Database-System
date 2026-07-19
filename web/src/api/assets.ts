@@ -15,6 +15,8 @@ export interface Asset {
   version: number
   created_at: string
   updated_at: string
+  // Wave 2 G8: 父资产 ID (外设挂载)
+  parent_asset_id?: string
 }
 
 export interface AssetListParams {
@@ -81,8 +83,38 @@ export function list(params?: AssetListParams): Promise<PaginatedResponse<Asset>
   return api.get('/assets', { params }).then((r) => r.data)
 }
 
+// Wave 2 G8: 资产详情 (含外设树)
+export interface AssetDetail {
+  asset: Asset
+  parent: Asset | null
+  children: Asset[]
+}
+
 export function getById(id: string): Promise<Asset> {
-  return api.get(`/assets/${id}`).then((r) => r.data?.data || r.data)
+  // G8: 后端返回 {asset, parent, children}; 兼容旧扁平响应
+  return api.get(`/assets/${id}`).then((r) => {
+    const data = r.data?.data ?? r.data
+    if (data && data.asset) return data.asset
+    return data
+  })
+}
+
+export function getDetail(id: string): Promise<AssetDetail> {
+  return api.get(`/assets/${id}`).then((r) => {
+    const data = r.data?.data ?? r.data
+    if (data && data.asset) {
+      return { asset: data.asset, parent: data.parent ?? null, children: data.children ?? [] }
+    }
+    return { asset: data, parent: null, children: [] }
+  })
+}
+
+export function mount(id: string, parentAssetId: string): Promise<Asset> {
+  return api.post(`/assets/${id}/mount`, { parent_asset_id: parentAssetId }).then((r) => r.data?.data ?? r.data)
+}
+
+export function unmount(id: string): Promise<Asset> {
+  return api.post(`/assets/${id}/unmount`).then((r) => r.data?.data ?? r.data)
 }
 
 export function create(data: CreateAssetData): Promise<Asset> {

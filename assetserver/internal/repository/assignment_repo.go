@@ -65,6 +65,8 @@ type AssignmentFilter struct {
 	Overdue    bool
 	Cursor     string
 	Limit      int
+	// Wave 2 G9: 行级数据权限范围 (nil/零值 → 回退到 OrgID, 历史行为)
+	Scope OrgScope
 }
 
 // Assign 领用资产: 悲观锁 + 写入 assignments 表 + 更新资产状态
@@ -225,15 +227,22 @@ func (r *AssignmentRepo) ListAssignments(ctx context.Context, q DBTX, f Assignme
 		f.Limit = 50
 	}
 
+	// G9: 行级数据权限 — 优先 Scope, 否则回退 OrgID
+	scope := f.Scope
+	if scope.OrgID == "" {
+		scope.OrgID = f.OrgID
+	}
+	orgClause, orgArgs := scope.ClauseFor("asn.org_id", 1)
+
 	query := `SELECT asn.id, asn.asset_id, asn.org_id, asn.assigned_to, asn.assigned_by, asn.status,
 		asn.assignment_type, COALESCE(asn.notes,''), asn.return_notes, asn.due_date, asn.assigned_at, asn.returned_at, asn.version,
 		COALESCE(a.name,''), COALESCE(a.asset_tag,''), COALESCE(u.username,'')
 		FROM assets.assignments asn
 		LEFT JOIN assets.assets a ON a.id = asn.asset_id
 		LEFT JOIN assets.users u ON u.id = asn.assigned_to
-		WHERE asn.org_id = $1`
-	args := []interface{}{f.OrgID}
-	argIdx := 2
+		WHERE ` + orgClause
+	args := orgArgs
+	argIdx := 1 + len(orgArgs)
 
 	if f.Status != "" {
 		query += fmt.Sprintf(" AND asn.status = $%d", argIdx)

@@ -18,11 +18,11 @@ import (
 
 // Sentinel errors for maintenance
 var (
-	ErrAssetRetired          = fmt.Errorf("asset is already retired")
-	ErrActiveOrderExists     = fmt.Errorf("asset already has an active maintenance order")
-	ErrOrderNotFound         = fmt.Errorf("maintenance order not found")
+	ErrAssetRetired           = fmt.Errorf("asset is already retired")
+	ErrActiveOrderExists      = fmt.Errorf("asset already has an active maintenance order")
+	ErrOrderNotFound          = fmt.Errorf("maintenance order not found")
 	ErrActiveAssignmentExists = fmt.Errorf("asset has active assignment, cannot retire")
-	ErrActiveOrderForRetire  = fmt.Errorf("asset has active maintenance order, cannot retire")
+	ErrActiveOrderForRetire   = fmt.Errorf("asset has active maintenance order, cannot retire")
 )
 
 // MaintenanceService 维修/保养工单服务 (事务边界)

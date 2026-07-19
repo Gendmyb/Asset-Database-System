@@ -19,8 +19,8 @@ import (
 
 // QRCodeHandler 资产二维码处理器
 type QRCodeHandler struct {
-	repo       *repository.AssetRepo
-	pool       *pgxpool.Pool
+	repo        *repository.AssetRepo
+	pool        *pgxpool.Pool
 	externalURL string // 受信基础 URL (cfg.Server.ExternalURL); 为空则禁止 url 模式
 }
 

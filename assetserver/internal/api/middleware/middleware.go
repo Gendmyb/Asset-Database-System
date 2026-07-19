@@ -88,8 +88,10 @@ func Auth(verifier ClaimsVerifier) gin.HandlerFunc {
 	}
 }
 
-// OrgScope org_id 自动注入 (防 IDOR)
-func OrgScope() gin.HandlerFunc {
+// OrgScope org_id 自动注入 (防 IDOR) + Wave 2 G9 行级数据权限模式注入。
+// departmentMode=true 时, 非超级管理员的可见范围收敛到本部门及子孙部门
+// (由仓储层用 organizations.path ltree 子树匹配实现); false 时行为与历史一致。
+func OrgScope(departmentMode bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 从 JWT claims 中提取 org_id (由 Auth 中间件设置)
 		orgID, exists := c.Get("org_id")
@@ -97,6 +99,8 @@ func OrgScope() gin.HandlerFunc {
 			// 默认 org (开发环境)
 			c.Set("org_id", "00000000-0000-4000-a000-000000000001")
 		}
+		// G9: 行级数据权限模式 (供 handler/仓储构建 OrgScope)
+		c.Set("data_scope_department", departmentMode)
 		c.Next()
 	}
 }
@@ -114,4 +118,12 @@ func extractToken(c *gin.Context) string {
 		return auth[7:]
 	}
 	return ""
+}
+
+// DataScopeMode 从 gin 上下文读取行级数据权限模式 (G9)。
+// 返回值供 handler 构建仓储层的 OrgScope。
+func DataScopeMode(c *gin.Context) bool {
+	v, _ := c.Get("data_scope_department")
+	b, _ := v.(bool)
+	return b
 }

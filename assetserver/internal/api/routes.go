@@ -25,6 +25,19 @@ import (
 
 // registerProductionRoutes 注册生产模式 (PG) 路由
 func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *config.Config) {
+	// orgScopeFromCtx 从 gin 上下文构建行级数据权限范围 (G9)。
+	// 闭包捕获 cfg 以读取 DATA_SCOPE_DEPARTMENT 开关。
+	orgScopeFromCtx := func(c *gin.Context) repository.OrgScope {
+		mode := repository.ScopeOrg
+		if cfg != nil && cfg.DataScope.Department {
+			mode = repository.ScopeDepartment
+		}
+		return repository.OrgScope{
+			OrgID: c.GetString("org_id"),
+			Role:  c.GetString("role"),
+			Mode:  mode,
+		}
+	}
 	assetRepo := repository.NewAssetRepo()
 	assignmentRepo := repository.NewAssignmentRepo()
 	dashRepo := repository.NewDashboardRepo()
@@ -40,9 +53,17 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *conf
 	_ = userRepo.EnsureSeedUsers(context.Background(), pool)
 
 	assetV2 := handler.NewAssetV2Handler(assetRepo, settingsRepo, pool)
-	assignmentH := handler.NewAssignmentHandler(assignmentRepo, pool)
+	assignmentSvc := service.NewAssignmentService(assignmentRepo)
 	maintenanceSvc := service.NewMaintenanceService(maintenanceRepo, assetRepo, assignmentRepo, settingsRepo)
-	maintenanceH := handler.NewMaintenanceHandler(maintenanceSvc, pool)
+	approvalRepo := repository.NewApprovalRepo()
+	approvalSvc := service.NewApprovalService(approvalRepo, pool)
+	// 注册审批通过后的业务执行回调
+	approvalSvc.RegisterExecutor(service.ApprovalAssignment, service.NewAssignmentApprovalExecutor(assignmentSvc, userRepo))
+	approvalSvc.RegisterExecutor(service.ApprovalRetirement, service.NewRetirementApprovalExecutor(maintenanceSvc))
+	approvalSvc.RegisterExecutor(service.ApprovalMaintenance, service.NewMaintenanceApprovalExecutor(maintenanceSvc))
+
+	assignmentH := handler.NewAssignmentHandler(assignmentRepo, pool).WithApproval(settingsRepo, approvalSvc)
+	maintenanceH := handler.NewMaintenanceHandler(maintenanceSvc, pool).WithApproval(settingsRepo, approvalSvc)
 	stocktakeSvc := service.NewStocktakeService(stocktakeRepo, assetRepo, settingsRepo)
 	stocktakeH := handler.NewStocktakeHandler(stocktakeSvc, pool)
 
@@ -142,19 +163,22 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *conf
 	manager.PUT("/assets/:id", assetV2.UpdateAsset)
 	manager.DELETE("/assets/:id", assetV2.DeleteAsset)
 	manager.POST("/assets/:id/transition", assetV2.LifecycleTransition)
-		// 历史记录 (viewer+)
-		viewer.GET("/assets/:id/history", func(c *gin.Context) {
-			orgID := c.GetString("org_id")
-			history, err := audit.QueryHistory(c.Request.Context(), pool, c.Param("id"), orgID, 50)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			if history == nil {
-				history = []audit.AuditLogRow{}
-			}
-			c.JSON(http.StatusOK, gin.H{"data": history})
-		})
+	// Wave 2 G8: 资产外设挂载/卸载 (manager+)
+	manager.POST("/assets/:id/mount", assetV2.MountAsset)
+	manager.POST("/assets/:id/unmount", assetV2.UnmountAsset)
+	// 历史记录 (viewer+)
+	viewer.GET("/assets/:id/history", func(c *gin.Context) {
+		orgID := c.GetString("org_id")
+		history, err := audit.QueryHistory(c.Request.Context(), pool, c.Param("id"), orgID, 50)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if history == nil {
+			history = []audit.AuditLogRow{}
+		}
+		c.JSON(http.StatusOK, gin.H{"data": history})
+	})
 
 	// 领用管理 (manager+)
 	manager.POST("/assets/:id/assign", assignmentH.Assign)
@@ -184,6 +208,7 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *conf
 			Overdue:    overdue,
 			Cursor:     c.Query("cursor"),
 			Limit:      limit,
+			Scope:      orgScopeFromCtx(c),
 		}
 
 		rows, nextCursor, hasMore, err := assignmentRepo.ListAssignments(c.Request.Context(), pool, f)
@@ -216,6 +241,7 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *conf
 			AssignedTo: c.Param("id"),
 			Cursor:     c.Query("cursor"),
 			Limit:      limit,
+			Scope:      orgScopeFromCtx(c),
 		}
 
 		rows, nextCursor, hasMore, err := assignmentRepo.ListAssignments(c.Request.Context(), pool, f)
@@ -323,10 +349,10 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *conf
 		}
 
 		c.JSON(http.StatusCreated, gin.H{"data": gin.H{
-			"id":              id,
-			"username":        input.Username,
-			"role":            input.Role,
-			"email":           input.Email,
+			"id":               id,
+			"username":         input.Username,
+			"role":             input.Role,
+			"email":            input.Email,
 			"initial_password": randPwd,
 		}})
 	})
@@ -471,4 +497,19 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *conf
 	userImportH := handler.NewUserImportHandler(userImportSvc, pool)
 	admin.GET("/admin/users/import/template", userImportH.GetTemplate)
 	admin.POST("/admin/users/import", userImportH.ImportUsers)
+
+	// ======== Wave 2 G7: 审批流管理 (admin+) ========
+	approvalH := handler.NewApprovalHandler(approvalSvc, pool)
+	admin.GET("/admin/approvals", approvalH.List)
+	admin.GET("/admin/approvals/:id", approvalH.Get)
+	admin.POST("/admin/approvals/:id/approve", approvalH.Approve)
+	admin.POST("/admin/approvals/:id/reject", approvalH.Reject)
+
+	// ======== Wave 2 G6: 通知规则管理 (admin+) ========
+	notifyRepo := repository.NewNotifyRepo()
+	notifyRuleH := handler.NewNotifyRuleHandler(notifyRepo, pool)
+	admin.GET("/admin/notify/rules", notifyRuleH.List)
+	admin.POST("/admin/notify/rules", notifyRuleH.Create)
+	admin.DELETE("/admin/notify/rules/:id", notifyRuleH.Delete)
+	admin.GET("/admin/notify/deliveries", notifyRuleH.ListDeliveries)
 }

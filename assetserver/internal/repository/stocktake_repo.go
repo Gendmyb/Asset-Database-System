@@ -56,6 +56,8 @@ type StocktakeFilter struct {
 	Status string
 	Cursor string
 	Limit  int
+	// Wave 2 G9: 行级数据权限范围 (nil/零值 → 回退到 OrgID, 历史行为)
+	Scope OrgScope
 }
 
 // StocktakeItemFilter 盘点明细查询过滤条件
@@ -182,11 +184,18 @@ func (r *StocktakeRepo) ListPlans(ctx context.Context, q DBTX, f StocktakeFilter
 		f.Limit = 50
 	}
 
+	// G9: 行级数据权限 — 优先 Scope, 否则回退 OrgID
+	scope := f.Scope
+	if scope.OrgID == "" {
+		scope.OrgID = f.OrgID
+	}
+	orgClause, orgArgs := scope.Clause(1)
+
 	query := `SELECT id, plan_no, org_id, name, scope_location_id, scope_type_id,
 		status, created_by, started_at, finished_at, created_at, updated_at
-		FROM assets.stocktake_plans WHERE org_id = $1`
-	args := []interface{}{f.OrgID}
-	argIdx := 2
+		FROM assets.stocktake_plans WHERE ` + orgClause
+	args := orgArgs
+	argIdx := 1 + len(orgArgs)
 
 	if f.Status != "" {
 		query += fmt.Sprintf(" AND status = $%d", argIdx)

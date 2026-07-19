@@ -3,11 +3,13 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/middleware"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/domain"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
@@ -70,6 +72,8 @@ type AssetResponse struct {
 	ManagedBy          *string    `json:"managed_by,omitempty"`
 	RetiredAt          *time.Time `json:"retired_at,omitempty"`
 	RetireReason       *string    `json:"retire_reason,omitempty"`
+	// Wave 2 G8: 父资产 ID
+	ParentAssetID *string `json:"parent_asset_id,omitempty"`
 }
 
 func rowToResponse(r *repository.AssetRow) AssetResponse {
@@ -91,6 +95,22 @@ func rowToResponse(r *repository.AssetRow) AssetResponse {
 		ManagedBy:          r.ManagedBy,
 		RetiredAt:          r.RetiredAt,
 		RetireReason:       r.RetireReason,
+		// G8
+		ParentAssetID: r.ParentAssetID,
+	}
+}
+
+// orgScopeFromCtx 从 gin 上下文构建 OrgScope (G9)。
+// mode 由 DATA_SCOPE_DEPARTMENT 配置开关注入。
+func orgScopeFromCtx(c *gin.Context) repository.OrgScope {
+	mode := repository.ScopeOrg
+	if middleware.DataScopeMode(c) {
+		mode = repository.ScopeDepartment
+	}
+	return repository.OrgScope{
+		OrgID: c.GetString("org_id"),
+		Role:  c.GetString("role"),
+		Mode:  mode,
 	}
 }
 
@@ -110,6 +130,7 @@ func (h *AssetV2Handler) ListAssets(c *gin.Context) {
 		Manufacturer: c.Query("manufacturer"),
 		Cursor:       c.Query("cursor"),
 		Limit:        limit,
+		Scope:        orgScopeFromCtx(c), // G9
 	}
 
 	rows, nextCursor, hasMore, err := h.repo.List(c.Request.Context(), h.pool, f)
@@ -132,14 +153,82 @@ func (h *AssetV2Handler) ListAssets(c *gin.Context) {
 	})
 }
 
-// GetAsset GET /api/v1/assets/:id
+// GetAsset GET /api/v1/assets/:id (G8: 返回外设树 parent + children; G9: 按 scope 过滤)
 func (h *AssetV2Handler) GetAsset(c *gin.Context) {
-	row, err := h.repo.GetByID(c.Request.Context(), h.pool, c.Param("id"), c.GetString("org_id"))
+	scope := orgScopeFromCtx(c)
+	detail, err := h.svc.GetAssetDetail(c.Request.Context(), h.pool, c.Param("id"), scope)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": rowToResponse(row)})
+
+	children := make([]AssetResponse, 0, len(detail.Children))
+	for i := range detail.Children {
+		children = append(children, rowToResponse(&detail.Children[i]))
+	}
+
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{
+		"asset":    rowToResponse(detail.Asset),
+		"parent":   parentResponse(detail.Parent),
+		"children": children,
+	}})
+}
+
+// parentResponse 父资产精简响应 (nil 时返回 null)
+func parentResponse(r *repository.AssetRow) *AssetResponse {
+	if r == nil {
+		return nil
+	}
+	resp := rowToResponse(r)
+	return &resp
+}
+
+// MountAsset POST /api/v1/assets/:id/mount (G8, manager+) — 挂载到父资产
+func (h *AssetV2Handler) MountAsset(c *gin.Context) {
+	var input struct {
+		ParentAssetID string `json:"parent_asset_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updated, err := h.svc.MountAsset(c.Request.Context(), h.pool,
+		c.Param("id"), input.ParentAssetID, c.GetString("org_id"), c.GetString("user_id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrCycleDetected):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "不能将资产挂载到自身或其后代下，会形成循环"})
+		case errors.Is(err, service.ErrInvalidParent):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "父资产不存在或不属于当前组织"})
+		case errors.Is(err, service.ErrAssetNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "资产不存在"})
+		case errors.Is(err, service.ErrVersionConflict):
+			c.JSON(http.StatusConflict, gin.H{"error": "版本冲突，请刷新后重试"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rowToResponse(updated)})
+}
+
+// UnmountAsset POST /api/v1/assets/:id/unmount (G8, manager+) — 解除挂载
+func (h *AssetV2Handler) UnmountAsset(c *gin.Context) {
+	updated, err := h.svc.UnmountAsset(c.Request.Context(), h.pool,
+		c.Param("id"), c.GetString("org_id"), c.GetString("user_id"))
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrAssetNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "资产不存在"})
+		case errors.Is(err, service.ErrVersionConflict):
+			c.JSON(http.StatusConflict, gin.H{"error": "版本冲突，请刷新后重试"})
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": rowToResponse(updated)})
 }
 
 // CreateAsset POST /api/v1/assets
@@ -162,6 +251,8 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 		UsefulLifeMonths   *int     `json:"useful_life_months"`
 		SalvageValue       *float64 `json:"salvage_value"`
 		ManagedBy          *string  `json:"managed_by"`
+		// G8: 父资产 (可选)
+		ParentAssetID *string `json:"parent_asset_id"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -220,12 +311,18 @@ func (h *AssetV2Handler) CreateAsset(c *gin.Context) {
 		UsefulLifeMonths:   input.UsefulLifeMonths,
 		SalvageValue:       salvageValue,
 		ManagedBy:          input.ManagedBy,
+		// G8
+		ParentAssetID: input.ParentAssetID,
 	}
 
 	row, err := h.svc.CreateAsset(c.Request.Context(), h.pool, svcInput)
 	if err != nil {
 		if isDuplicateKeyErr(err) {
 			c.JSON(http.StatusConflict, gin.H{"error": "资产编号已存在，请更换或留空自动生成"})
+			return
+		}
+		if errors.Is(err, service.ErrInvalidParent) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "父资产不存在或不属于当前组织"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -299,15 +396,15 @@ func (h *AssetV2Handler) CreateAssetBatch(c *gin.Context) {
 	}
 
 	svcInput := service.CreateAssetInput{
-		Name:           input.Name,
-		TypeID:         input.TypeID,
-		OrgID:          orgID,
-		SerialNumber:   input.SerialNumber,
-		Manufacturer:   input.Manufacturer,
-		Model:          input.Model,
-		LifecycleState: input.LifecycleState,
-		Properties:     input.Properties,
-		ActorID:        userID,
+		Name:               input.Name,
+		TypeID:             input.TypeID,
+		OrgID:              orgID,
+		SerialNumber:       input.SerialNumber,
+		Manufacturer:       input.Manufacturer,
+		Model:              input.Model,
+		LifecycleState:     input.LifecycleState,
+		Properties:         input.Properties,
+		ActorID:            userID,
 		PurchasePrice:      input.PurchasePrice,
 		PurchaseDate:       purchaseDate,
 		Supplier:           input.Supplier,
@@ -334,7 +431,7 @@ func (h *AssetV2Handler) CreateAssetBatch(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"data":  gin.H{"assets": data, "count": len(data)},
+		"data": gin.H{"assets": data, "count": len(data)},
 	})
 }
 

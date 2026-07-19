@@ -19,11 +19,11 @@ import (
 // ============================================================
 
 type mockAssetRepo struct {
-	assets  map[string]*Asset
-	history map[string][]AuditLog
-	createErr error
-	updateErr error
-	deleteErr error
+	assets     map[string]*Asset
+	history    map[string][]AuditLog
+	createErr  error
+	updateErr  error
+	deleteErr  error
 	getByIDErr error
 }
 
@@ -143,11 +143,11 @@ func TestCreateAsset(t *testing.T) {
 	router := setupTestRouter(repo)
 
 	body := map[string]interface{}{
-		"asset_tag":     "ASSET-001",
-		"name":          "MacBook Pro 16",
-		"type_id":       "laptop",
+		"asset_tag":       "ASSET-001",
+		"name":            "MacBook Pro 16",
+		"type_id":         "laptop",
 		"lifecycle_state": "procurement",
-		"status":        "available",
+		"status":          "available",
 	}
 
 	data, _ := json.Marshal(body)

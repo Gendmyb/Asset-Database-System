@@ -141,6 +141,7 @@ func (h *StocktakeHandler) ListPlans(c *gin.Context) {
 		Status: c.Query("status"),
 		Cursor: c.Query("cursor"),
 		Limit:  limit,
+		Scope:  orgScopeFromCtx(c), // G9
 	}
 
 	rows, nextCursor, hasMore, err := h.svc.ListPlans(c.Request.Context(), h.pool, f)

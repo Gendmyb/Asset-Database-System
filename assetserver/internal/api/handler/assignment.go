@@ -14,9 +14,11 @@ import (
 
 // AssignmentHandler 领用管理
 type AssignmentHandler struct {
-	repo *repository.AssignmentRepo
-	svc  *service.AssignmentService
-	pool *pgxpool.Pool
+	repo         *repository.AssignmentRepo
+	svc          *service.AssignmentService
+	pool         *pgxpool.Pool
+	settingsRepo *repository.SettingsRepo
+	approvalSvc  *service.ApprovalService
 }
 
 func NewAssignmentHandler(repo *repository.AssignmentRepo, pool *pgxpool.Pool) *AssignmentHandler {
@@ -25,6 +27,13 @@ func NewAssignmentHandler(repo *repository.AssignmentRepo, pool *pgxpool.Pool) *
 		svc:  service.NewAssignmentService(repo),
 		pool: pool,
 	}
+}
+
+// WithApproval 注入审批服务与设置仓库, 启用领用审批门
+func (h *AssignmentHandler) WithApproval(settingsRepo *repository.SettingsRepo, approvalSvc *service.ApprovalService) *AssignmentHandler {
+	h.settingsRepo = settingsRepo
+	h.approvalSvc = approvalSvc
+	return h
 }
 
 // Assign POST /api/v1/assets/:id/assign
@@ -42,6 +51,30 @@ func (h *AssignmentHandler) Assign(c *gin.Context) {
 
 	orgID := c.GetString("org_id")
 	userID := c.GetString("user_id")
+
+	// 审批门: 若启用领用审批, 创建 pending 审批请求, 待通过后才执行领用
+	if h.approvalSvc != nil && service.IsApprovalEnabled(c.Request.Context(), h.settingsRepo, h.pool, "assignment") {
+		id, err := h.approvalSvc.Create(c.Request.Context(), service.CreateInput{
+			ResourceType: service.ApprovalAssignment,
+			ResourceID:   assetID,
+			RequesterID:  userID,
+			OrgID:        orgID,
+			Payload: map[string]string{
+				"assigned_to": input.AssignedTo,
+				"notes":       input.Notes,
+			},
+		})
+		if err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"data": gin.H{
+			"approval_id": id,
+			"asset_id":    assetID,
+			"status":      "pending_approval",
+		}})
+		return
+	}
 
 	assignmentID, err := h.svc.Assign(c.Request.Context(), h.pool, assetID, orgID, input.AssignedTo, userID, input.Notes)
 	if err != nil {

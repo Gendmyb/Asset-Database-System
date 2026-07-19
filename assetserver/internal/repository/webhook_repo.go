@@ -22,14 +22,14 @@ type WebhookEndpointRow struct {
 
 // WebhookDeliveryRow represents a webhook delivery row
 type WebhookDeliveryRow struct {
-	ID         string `json:"id"`
-	EndpointID string `json:"endpoint_id"`
-	EventType  string `json:"event_type"`
-	Status     string `json:"status"`
-	Attempts   int    `json:"attempts"`
-	StatusCode *int   `json:"status_code,omitempty"`
+	ID         string  `json:"id"`
+	EndpointID string  `json:"endpoint_id"`
+	EventType  string  `json:"event_type"`
+	Status     string  `json:"status"`
+	Attempts   int     `json:"attempts"`
+	StatusCode *int    `json:"status_code,omitempty"`
 	LastError  *string `json:"last_error,omitempty"`
-	CreatedAt  string `json:"created_at"`
+	CreatedAt  string  `json:"created_at"`
 }
 
 // WebhookRepo webhook endpoint persistence
