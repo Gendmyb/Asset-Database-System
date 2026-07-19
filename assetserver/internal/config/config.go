@@ -59,7 +59,7 @@ func Load() (*Config, error) {
 			Host:            getEnv("DB_HOST", "localhost"),
 			Port:            getEnv("DB_PORT", "5432"),
 			Name:            getEnv("DB_NAME", "assetdb"),
-			User:            getEnv("DB_USER", "app_writer"),
+			User:            getEnv("DB_USER", "app_user"),
 			Password:        os.Getenv("DATABASE_PASSWORD"),
 			Schema:          "assets",
 			MaxConns:        25,

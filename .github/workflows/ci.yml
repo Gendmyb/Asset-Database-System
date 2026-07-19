@@ -86,7 +86,11 @@ jobs:
         working-directory: web
       - name: Build and run
         env:
-          DATABASE_URL: "postgres://app_user:app_pass@localhost:5432/assetdb?sslmode=disable&search_path=assets"
+          DB_USER: app_user
+          DATABASE_PASSWORD: app_pass
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          DB_NAME: assetdb
           JWT_ED25519_SEED: "0000000000000000000000000000000000000000000000000000000000000000"
         run: |
           go build -o /tmp/app ./cmd/api-server
