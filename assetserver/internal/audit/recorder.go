@@ -101,7 +101,7 @@ func QueryHistory(ctx context.Context, q Querier, assetID, orgID string, limit i
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	rows, err := tx.Query(ctx,
+	rows, err := q.Query(ctx,
 		`SELECT id, asset_id, org_id, user_id, action, metadata, prev_hash, hash,
 		        to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 		 FROM assets.audit_log
