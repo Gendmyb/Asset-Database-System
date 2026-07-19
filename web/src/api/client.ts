@@ -53,7 +53,8 @@ api.interceptors.response.use(
 
     // 不要对 refresh/login 请求本身重试
     // /auth/login 的 401 只 reject，让 Login 组件显示错误提示
-    if (originalRequest.url === '/auth/login') {
+    // axios 的 error.config.url 可能含 baseURL，用 endsWith 兜底
+    if (originalRequest.url && (originalRequest.url === '/auth/login' || originalRequest.url.endsWith('/auth/login'))) {
       return Promise.reject(error)
     }
     if (originalRequest.url === '/auth/refresh') {
