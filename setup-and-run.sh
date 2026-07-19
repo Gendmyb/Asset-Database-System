@@ -23,13 +23,16 @@ echo "[2/4] 配置数据库..."
 sudo pg_ctlcluster 14 main start 2>/dev/null || true
 sudo systemctl start postgresql 2>/dev/null || true
 
-# 创建用户和数据库 (幂等)
+# 创建用户和数据库 (幂等), app_user 需要 SUPERUSER 以便迁移中创建 role 和 extension
 sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='app_user'" 2>/dev/null | grep -q 1 || \
-    sudo -u postgres psql -c "CREATE USER app_user WITH PASSWORD 'app_pass'"
+    sudo -u postgres psql -c "CREATE USER app_user WITH PASSWORD 'app_pass' SUPERUSER CREATEROLE"
 sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='assetdb'" 2>/dev/null | grep -q 1 || \
     sudo -u postgres psql -c "CREATE DATABASE assetdb OWNER app_user"
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE assetdb TO app_user"
 sudo -u postgres psql -d assetdb -c "CREATE SCHEMA IF NOT EXISTS assets AUTHORIZATION app_user"
+
+# 如果 app_user 已存在但不是 SUPERUSER，则升级
+sudo -u postgres psql -c "ALTER USER app_user SUPERUSER CREATEROLE" 2>/dev/null || true
 
 echo "  数据库就绪 ✓"
 
