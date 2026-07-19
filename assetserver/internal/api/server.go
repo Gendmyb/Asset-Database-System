@@ -391,7 +391,17 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 				return
 			}
-			c.FileFromFS(path, web.Handler())
+			fs := web.Handler()
+			if path == "/" {
+				path = "/index.html"
+			}
+			f, err := fs.Open(path)
+			if err != nil {
+				path = "/index.html"
+			} else {
+				f.Close()
+			}
+			c.FileFromFS(path, fs)
 		})
 	}
 
