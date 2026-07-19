@@ -38,10 +38,26 @@ echo "  数据库就绪 ✓"
 
 # ---- Step 3: 构建前端 (如需) ----
 echo "[3/5] 构建前端..."
-if [ ! -d "$SCRIPT_DIR/assetserver/web/dist" ] || [ "$SCRIPT_DIR/web/src" -nt "$SCRIPT_DIR/assetserver/web/dist" ]; then
+NEED_BUILD=false
+
+# 检查 dist 是否包含真实构建产物 (不是占位文件)
+if [ ! -f "$SCRIPT_DIR/assetserver/web/dist/index.html" ]; then
+    NEED_BUILD=true
+elif grep -q "Frontend not built" "$SCRIPT_DIR/assetserver/web/dist/index.html" 2>/dev/null; then
+    NEED_BUILD=true
+elif [ ! -d "$SCRIPT_DIR/assetserver/web/dist/assets" ]; then
+    NEED_BUILD=true
+elif [ "$SCRIPT_DIR/web/src" -nt "$SCRIPT_DIR/assetserver/web/dist" ]; then
+    NEED_BUILD=true
+fi
+
+if $NEED_BUILD; then
     if command -v npm &>/dev/null; then
-        (cd "$SCRIPT_DIR/web" && npm run build) || echo "  ⚠ 前端构建失败，使用已有 dist"
+        echo "  正在构建前端..."
+        (cd "$SCRIPT_DIR/web" && npm ci && npm run build) || echo "  ⚠ 前端构建失败，使用已有 dist"
+        rm -rf "$SCRIPT_DIR/assetserver/web/dist"
         cp -r "$SCRIPT_DIR/web/dist" "$SCRIPT_DIR/assetserver/web/dist"
+        echo "  前端构建完成 ✓"
     else
         echo "  ⚠ npm 未安装，跳过前端构建"
     fi
