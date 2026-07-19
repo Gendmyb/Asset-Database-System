@@ -14,6 +14,7 @@ import Spinner from '../components/ui/Spinner'
 import * as maintenanceApi from '../api/maintenance'
 import * as assetsApi from '../api/assets'
 import { getApiError } from '../lib/errors'
+import { useRole } from '../lib/roles'
 
 function fmtDate(d: string) {
   try {
@@ -38,6 +39,7 @@ export default function MaintenancePage() {
   const [completingTicket, setCompletingTicket] = useState<maintenanceApi.MaintenanceTicket | null>(null)
   const [cancelingTicket, setCancelingTicket] = useState<maintenanceApi.MaintenanceTicket | null>(null)
 
+  const { canManage } = useRole()
   const queryClient = useQueryClient()
 
   const { data, isLoading, isError, error } = useQuery({
@@ -173,6 +175,9 @@ export default function MaintenancePage() {
         if (row.status === 'completed' || row.status === 'canceled') {
           return <span style={{ color: 'var(--text-quaternary)', fontSize: 12 }}>—</span>
         }
+        if (!canManage) {
+          return <span style={{ color: 'var(--text-quaternary)', fontSize: 12 }}>—</span>
+        }
         return (
           <div style={{ display: 'flex', gap: 6 }}>
             {row.status === 'open' && (
@@ -237,14 +242,16 @@ export default function MaintenancePage() {
           </h1>
           <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>管理资产维修与保养工单</p>
         </div>
-        <Button
-          onClick={() => {
-            createForm.reset()
-            setShowCreate(true)
-          }}
-        >
-          + 新建工单
-        </Button>
+        {canManage && (
+          <Button
+            onClick={() => {
+              createForm.reset()
+              setShowCreate(true)
+            }}
+          >
+            + 新建工单
+          </Button>
+        )}
       </div>
 
       {/* Filters */}

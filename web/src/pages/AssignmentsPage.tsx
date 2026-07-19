@@ -9,6 +9,7 @@ import Spinner from '../components/ui/Spinner'
 import * as assignmentsApi from '../api/assignments'
 import * as assetsApi from '../api/assets'
 import { getApiError } from '../lib/errors'
+import { useRole } from '../lib/roles'
 
 type TabKey = 'all' | 'permanent' | 'temporary' | 'overdue'
 
@@ -40,6 +41,7 @@ function isOverdue(row: assignmentsApi.Assignment): boolean {
 export default function AssignmentsPage() {
   const [tab, setTab] = useState<TabKey>('all')
   const queryClient = useQueryClient()
+  const { canManage } = useRole()
 
   const params: assignmentsApi.AssignmentListParams = {}
   if (tab === 'permanent') {
@@ -167,6 +169,7 @@ export default function AssignmentsPage() {
       label: '操作',
       render: (row) => {
         if (row.status === 'returned') return <span style={{ color: 'var(--text-quaternary)', fontSize: 12 }}>—</span>
+        if (!canManage) return <span style={{ color: 'var(--text-quaternary)', fontSize: 12 }}>—</span>
         return (
           <Button
             variant="secondary"

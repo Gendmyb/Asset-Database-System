@@ -16,6 +16,7 @@ import * as maintenanceApi from '../../api/maintenance'
 import { getApiError } from '../../lib/errors'
 import { toast as sonnerToast } from 'sonner'
 import { useAuthStore } from '../../store/authStore'
+import { canManage as canManageRole } from '../../lib/roles'
 
 const LIFECYCLE_LABELS: Record<string, string> = {
   procurement: '采购中',
@@ -67,6 +68,7 @@ export default function AssetDetailPanel({
   const [assignedUser, setAssignedUser] = useState<string | null>(null)
   const role = useAuthStore((s) => s.user?.role)
   const isAdmin = role === 'admin' || role === 'super_admin'
+  const canManage = canManageRole(role)
   const [form, setForm] = useState({
     name: asset.name,
     manufacturer: asset.manufacturer || '',
@@ -382,13 +384,15 @@ export default function AssetDetailPanel({
           ))}
 
           <div style={{ marginTop: 12 }}>
-            <Button
-              variant="secondary"
-              onClick={() => setEditMode(true)}
-              style={{ width: '100%' }}
-            >
-              编辑
-            </Button>
+            {canManage && (
+              <Button
+                variant="secondary"
+                onClick={() => setEditMode(true)}
+                style={{ width: '100%' }}
+              >
+                编辑
+              </Button>
+            )}
           </div>
         </>
       )}
@@ -439,7 +443,7 @@ export default function AssetDetailPanel({
           </span>
         </div>
 
-        {transitions.length > 0 && (
+        {transitions.length > 0 && canManage && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <div
               style={{
@@ -505,50 +509,54 @@ export default function AssetDetailPanel({
         )}
       </div>
 
-      {/* Actions: Assign / Borrow / Release */}
-      <div style={{ marginTop: 24 }}>
-        {asset.status === 'available' && (
-          <div style={{ display: 'flex', gap: 8 }}>
+      {/* Actions: Assign / Borrow / Release (manager+) */}
+      {canManage && (
+        <div style={{ marginTop: 24 }}>
+          {asset.status === 'available' && (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <Button
+                onClick={() => onAssign(asset)}
+                style={{ flex: 1 }}
+              >
+                领用
+              </Button>
+              <Button
+                onClick={() => onBorrow(asset)}
+                variant="secondary"
+                style={{ flex: 1 }}
+              >
+                借用
+              </Button>
+            </div>
+          )}
+          {asset.status === 'assigned' && (
             <Button
-              onClick={() => onAssign(asset)}
-              style={{ flex: 1 }}
+              onClick={() => releasesMutation.mutate()}
+              loading={releasesMutation.isPending}
+              variant="primary"
+              style={{ width: '100%' }}
             >
-              领用
+              归还
             </Button>
+          )}
+        </div>
+      )}
+
+      {/* Maintenance Actions: Repair (manager+) / Retire (admin+) */}
+      {asset.lifecycle_state !== 'retirement' && (canManage || isAdmin) && (
+        <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
+          {canManage && (
             <Button
-              onClick={() => onBorrow(asset)}
               variant="secondary"
               style={{ flex: 1 }}
+              onClick={() => {
+                repairForm.reset()
+                setShowRepairModal(true)
+              }}
             >
-              借用
+              报修
             </Button>
-          </div>
-        )}
-        {asset.status === 'assigned' && (
-          <Button
-            onClick={() => releasesMutation.mutate()}
-            loading={releasesMutation.isPending}
-            variant="primary"
-            style={{ width: '100%' }}
-          >
-            归还
-          </Button>
-        )}
-      </div>
-
-      {/* Maintenance Actions: Repair / Retire */}
-      {asset.lifecycle_state !== 'retirement' && (
-        <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-          <Button
-            variant="secondary"
-            style={{ flex: 1 }}
-            onClick={() => {
-              repairForm.reset()
-              setShowRepairModal(true)
-            }}
-          >
-            报修
-          </Button>
+          )}
           {isAdmin && (
             <Button
               variant="danger"

@@ -217,9 +217,11 @@ export default function StocktakesPage() {
             管理资产盘点计划，核对资产信息
           </p>
         </div>
-        <Button variant="primary" onClick={() => setCreateOpen(true)}>
-          新建盘点
-        </Button>
+        {isAdmin && (
+          <Button variant="primary" onClick={() => setCreateOpen(true)}>
+            新建盘点
+          </Button>
+        )}
       </div>
 
       {/* Error */}

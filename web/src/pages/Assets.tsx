@@ -11,8 +11,10 @@ import * as assetsApi from '../api/assets'
 import * as usersApi from '../api/users'
 import * as lookupApi from '../api/lookup'
 import { getApiError } from '../lib/errors'
+import { useRole } from '../lib/roles'
 
 export default function Assets() {
+  const { canManage } = useRole()
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [lifecycleFilter, setLifecycleFilter] = useState('')
@@ -104,8 +106,8 @@ export default function Assets() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button variant="secondary" onClick={() => setShowImport(true)}>导入</Button>
-          <Button onClick={() => setShowCreate(true)}>+ 新建资产</Button>
+          {canManage && <Button variant="secondary" onClick={() => setShowImport(true)}>导入</Button>}
+          {canManage && <Button onClick={() => setShowCreate(true)}>+ 新建资产</Button>}
         </div>
       </div>
 

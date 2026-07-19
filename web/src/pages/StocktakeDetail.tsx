@@ -15,6 +15,7 @@ import EmptyState from '../components/ui/EmptyState'
 import * as stocktakeApi from '../api/stocktake'
 import * as lookupApi from '../api/lookup'
 import { getApiError } from '../lib/errors'
+import { useRole } from '../lib/roles'
 
 function fmtDate(d?: string): string {
   if (!d) return '—'
@@ -48,6 +49,7 @@ export default function StocktakeDetail() {
   const { id } = useParams<{ id: string }>()
   const queryClient = useQueryClient()
   const planId = id!
+  const { canManage, canAdmin } = useRole()
 
   const [resultFilter, setResultFilter] = useState('')
   const [search, setSearch] = useState('')
@@ -242,7 +244,7 @@ export default function StocktakeDetail() {
         <select
           value={row.result || ''}
           onChange={(e) => handleResultChange(row.id, e.target.value)}
-          disabled={updateMutation.isPending}
+          disabled={updateMutation.isPending || !canManage}
           style={{
             padding: '4px 8px',
             borderRadius: 5,
@@ -297,7 +299,7 @@ export default function StocktakeDetail() {
           <select
             value={currentVal}
             onChange={(e) => handleLocationChange(row.id, e.target.value)}
-            disabled={updateMutation.isPending}
+            disabled={updateMutation.isPending || !canManage}
             style={{
               padding: '4px 8px',
               borderRadius: 5,
@@ -701,8 +703,8 @@ export default function StocktakeDetail() {
         }}
       />
 
-      {/* Bottom Actions — only for in_progress plans */}
-      {plan.status === 'in_progress' && (
+      {/* Bottom Actions — only for in_progress plans (盘盈 manager+, 完成 admin+) */}
+      {plan.status === 'in_progress' && (canManage || canAdmin) && (
         <div
           style={{
             display: 'flex',
@@ -711,18 +713,22 @@ export default function StocktakeDetail() {
             marginTop: 24,
           }}
         >
-          <Button variant="secondary" onClick={() => setSurplusOpen(true)}>
-            盘盈登记
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => {
-              setApplyMoves(false)
-              setCompleteOpen(true)
-            }}
-          >
-            完成盘点
-          </Button>
+          {canManage && (
+            <Button variant="secondary" onClick={() => setSurplusOpen(true)}>
+              盘盈登记
+            </Button>
+          )}
+          {canAdmin && (
+            <Button
+              variant="primary"
+              onClick={() => {
+                setApplyMoves(false)
+                setCompleteOpen(true)
+              }}
+            >
+              完成盘点
+            </Button>
+          )}
         </div>
       )}
 

@@ -1,8 +1,9 @@
 import { lazy, Suspense } from 'react'
-import { Routes, Route, Navigate, Outlet } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'sonner'
 import Layout from './components/Layout'
+import AdminLayout from './components/AdminLayout'
 import RequireAuth from './components/RequireAuth'
 import Login from './pages/Login'
 import Assets from './pages/Assets'
@@ -16,6 +17,7 @@ const StocktakeDetail = lazy(() => import('./pages/StocktakeDetail'))
 const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const UsersPage = lazy(() => import('./pages/admin/Users'))
 const SettingsPage = lazy(() => import('./pages/admin/Settings'))
+const WebhooksPage = lazy(() => import('./pages/admin/Webhooks'))
 
 function PageLoader() {
   return (
@@ -111,7 +113,7 @@ export default function App() {
               </Suspense>
             }
           />
-          <Route path="/admin" element={<Outlet />}>
+          <Route path="/admin" element={<AdminLayout />}>
             <Route
               index
               element={<Navigate to="/admin/users" replace />}
@@ -129,6 +131,14 @@ export default function App() {
               element={
                 <Suspense fallback={<PageLoader />}>
                   <SettingsPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="webhooks"
+              element={
+                <Suspense fallback={<PageLoader />}>
+                  <WebhooksPage />
                 </Suspense>
               }
             />
