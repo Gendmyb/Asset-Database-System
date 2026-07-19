@@ -15,7 +15,18 @@
 - **G7 审批流**：领用 / 报废 / 维修可配置审批门，系统设置 `approval.assignment.enabled` / `approval.retirement.enabled` / `approval.maintenance.enabled`（默认全部关闭，向后兼容）。API：`/admin/approvals`、`/admin/approvals/:id/approve|reject`。
 - **G8 资产关系 / 外设挂载**：`POST /assets/:id/mount`、`POST /assets/:id/unmount`（manager+），资产详情返回 parent + children 外设树。防循环 + 跨 org 禁止。
 - **G9 部门级行级权限**：env `DATA_SCOPE_DEPARTMENT`(默认 off)。开启后 super_admin 全局可见、manager 仅见本部门及子孙（ltree 子树）；关闭时行为同 v0.2.0（org 级）。
-- **迁移**：011(ldap + user_import)、012(notify + approvals)、013(asset_parent + data_scope)，启动自动执行，多实例 EXCLUSIVE 锁。
+- **迁移**：011(ldap + user_import)、012(notify + approvals)、013(asset_parent + data_scope)、**014(ad_group_mappings + users.data_scope + users.manual_override)**，启动自动执行，多实例 EXCLUSIVE 锁。
+
+### 企业化适配（Wave 3 — AD 域控增强）
+
+> 交付 T0–T10，解决企业化 AD 部署中暴露的 truncation、角色粒度不足、权限过度放大、误覆盖 admin 调整四大问题。提交 `TODO-commit-hash`。所有新功能默认关闭，向后兼容 v0.2.0 行为。
+
+- **T0–T2 组同步 + ControlPaging**（`internal/auth/ldap/`）：LDAP 搜索增加 `ControlPaging`，防止 AD 默认 MaxPageSize=1000 导致的**无声截断**。换回原版 `go-ldap/v3`，仅开启翻页控制扩展 (`ControlTypePaging`)。新增 env：`LDAP_PAGE_SIZE`(默认 1000)、`LDAP_SYNC_RECURSIVE`(默认 true，递归搜索 OU 嵌套组)、`LDAP_GROUP_ATTR`(默认 `memberOf`，组属性字段)。修复 `base_dn` 拼写检查在合理值上的误报。
+- **T3–T5 组到角色映射**：新增 `ad_group_mappings` 表，将 AD 安全组 DN 映射到系统角色（`super_admin`/`admin`/`manager`/`viewer`）与数据范围（`inherit`/`self`）。系统同步时枚举所有启用的映射组，查询组成员并按**最高角色**确定用户角色。API：`GET/POST /admin/ldap/group-mappings`、`DELETE /admin/ldap/group-mappings/:id`（admin+）。Admin UI 新增「LDAP 组映射」管理卡片。
+- **T6–T8 个人数据范围（ScopeSelf）**：`users` 表新增 `data_scope` 列（`inherit` 默认 / `self` 仅见自己）。当值为 `self` 时，用户只能查看分配给自己（`assignments.assigned_to_user_id = current_user`）的资产，即使拥有 manager/admin 角色也无法越权查看同部门/同 org 其他人的资产。范围优先级：`users.data_scope = 'self'` 时忽略其他范围策略；`'inherit'` 时回退到组映射或系统默认。
+- **T9–T10 LDAP 状态页 + 用户列表增强**：Admin UI 新增「LDAP 状态」页面，展示同步状态、组映射列表 CRUD、最后一次同步时间/结果统计。用户管理页面增强：列表新增 `source` 列（Local / LDAP 徽标）、`display_name` 列展示 AD displayName；详情/行操作增加「Link AD Account」/「Unlink AD Account」按钮。
+- **manual_override 防覆盖**：`users` 表新增 `manual_override` 布尔列（默认 false）。AD 同步前由 admin 对特定用户开启此标记，随后**任何 AD 同步都不会覆盖该用户的 role、status、data_scope 字段**（display_name、email、department 仍正常刷新）。适用于 admin 手动调整了某用户权限/范围后需要保护不被 AD 批量覆盖的场景。
+- **迁移**：014_ad_enterprise，新增 `ad_group_mappings` 表（唯一 DN 约束 + `sync_enabled` 索引），`users` 表新增 `data_scope` 列（默认 `'inherit'`）、`manual_override` 列（默认 `false`）+ 索引。全部 `IF NOT EXISTS`，幂等安全。
 
 ### 体验与门控
 - 前端 UI 改为**亮色主题**（Linear 风格），并修复 `index.css` 未被 `main.tsx` 引入导致生产构建样式全丢的根因。

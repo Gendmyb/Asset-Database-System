@@ -252,12 +252,86 @@ postgres://app_user:<PASSWORD>@<DB_HOST>:<DB_PORT>/assetdb?sslmode=<DB_SSLMODE>&
 
 无需 env，通过系统设置开关：`approval.assignment.enabled` / `approval.retirement.enabled` / `approval.maintenance.enabled`，默认全部关闭（领用/报废/维修直接执行，向后兼容）。开启后对应操作生成审批单，经 `/admin/approvals/:id/approve|reject` 流转后方可生效。
 
+### Wave 3: AD 组同步与企业级权限
+
+> Wave 3 引入的增强能力（T0–T10）全部默认关闭，行为与 v0.2.0 一致；所有 env 均为可选项。
+
+#### ControlPaging 与同步控制
+
+AD/LDAP 搜索新增分页控制，防止 AD 默认 MaxPageSize=1000 导致的无声截断（超过 1000 用户时仅返回前 1000 条，无任何错误提示）。此行为自动生效，无需额外配置。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LDAP_PAGE_SIZE` | `1000` | 单页返回条目数，与 AD MaxPageSize 匹配。降低可减少每页负载，但不能超过 AD 服务器 `MaxPageSize` 限制 |
+| `LDAP_SYNC_RECURSIVE` | `true` | `true` 时递归搜索 `LDAP_BASE_DN` 下所有 OU 嵌套组；`false` 仅查直属对象 |
+| `LDAP_LINK_EXISTING` | `false` | `true` 时 AD 同步会尝试将现有用户与 AD 账号关联（匹配 username）；仅影响首次关联，不覆盖已有关联 |
+| `LDAP_GROUP_ATTR` | `memberOf` | LDAP 属性字段名，用于读取用户所属组列表。AD 默认 `memberOf`，标准 LDAP 可能需改为 `memberof` 或自定义属性 |
+
+#### 组到角色映射（ad_group_mappings）
+
+通过 `ad_group_mappings` 表将 AD 安全组 DN 映射到系统角色。同步时系统枚举所有 `sync_enabled=true` 的映射，查询对应组成员并按**最高角色**确定每个用户的最终角色。
+
+**配置方式**（API + Admin UI）：
+
+1. 在 Admin UI「LDAP 状态」→「组映射」卡片中创建映射，或通过 API：
+   ```
+   POST /admin/ldap/group-mappings
+   { "group_dn": "CN=IT-Admins,OU=Groups,DC=corp,DC=local",
+     "group_name": "IT-Admins",
+     "role": "admin",
+     "data_scope": "inherit",
+     "sync_enabled": true }
+   ```
+2. `group_dn` 必须精确匹配 AD 中组的 `distinguishedName`（表中 UNIQUE 约束）。
+3. `data_scope` 设为 `self` 时，该组所有成员将只能看到分配给自己个人的资产（见下文）。
+4. 如果用户属于多个映射组，取角色层级最高的（`super_admin > admin > manager > viewer`）。
+5. 删除或设置 `sync_enabled=false` 即停止该组映射。
+
+手动同步：`POST /admin/ldap/sync`（admin+），或配置 `SCHEDULER_LDAP_SYNC=true` 定时触发。
+
+#### 个人数据范围（data_scope）
+
+`users.data_scope` 控制单个用户的数据可见范围：
+
+| 值 | 行为 | 安全说明 |
+|---|---|---|
+| `inherit`（默认） | 沿用组映射的 `data_scope`，或系统默认（org/部门级） | 历史行为，向后兼容 |
+| `self` | 用户只能查看 **分配给自己**（`assigned_to_user_id = current_user`）的资产 | **最高限制优先级**：即使拥有 manager/admin 角色也无法越权查看他人的资产。适合外部审计员、临时承包商等敏感角色 |
+
+范围优先级判定：
+1. 若 `users.data_scope = 'self'` → 忽略所有其他范围策略，仅返回自有资产
+2. 若 `users.data_scope = 'inherit'` → 回退到组映射的 `data_scope`，若组也未指定则使用系统默认（`DATA_SCOPE_DEPARTMENT` env 或 v0.2.0 org 级）
+
+**安全影响**：`self` 模式是硬限制，不受角色提升影响。不要将其分配给需要跨用户管理的 admin/manager——这些角色应保持 `inherit` 并依靠部门权限（G9）控制范围。建议仅对审计/承包商/临时访问场景使用 `self`。
+
+#### manual_override 保护
+
+`users.manual_override` 标记（默认 `false`）用于保护 admin 手动调整不被 AD 同步覆盖：
+
+- **未开启**（`false`）：AD 同步正常更新用户的 role、status、data_scope 等字段
+- **开启**（`true`）：AD 同步**跳过**该用户的 role、status、data_scope 字段更新，但 display_name、email、department 等基本属性仍正常刷新
+
+典型场景：
+1. Admin 手动将某用户的角色从 `viewer` 提升为 `manager`
+2. Admin 对该用户开启 `manual_override`（Admin UI 用户管理页 → 行操作）
+3. 后续 AD 同步不会再将其降级回 `viewer`
+4. 用户的 display_name/email 变化仍会从 AD 同步
+
+#### 迁移 014
+
+`014_ad_enterprise.sql` 随应用启动自动执行（见第 10 节迁移机制），包含：
+- `ad_group_mappings` 表（group_dn UNIQUE、sync_enabled 索引）
+- `users.data_scope` 列（默认 `'inherit'`，CHECK `IN ('inherit','self')`）
+- `users.manual_override` 列（默认 `false`，带 partial index）
+
+全部使用 `IF NOT EXISTS`，对已运行的实例安全幂等，不会影响现有数据。
+
 ---
 
 ## 7. 数据库说明
 
 - **schema**：所有表位于 `assets` schema（非 public）。
-- **迁移**：`assetserver/migrations/001-013*.sql`，启动时自动执行（见第 10 节）。当前最新为 `013_asset_parent_and_data_scope.sql`。
+- **迁移**：`assetserver/migrations/001-014*.sql`，启动时自动执行（见第 10 节）。当前最新为 `014_ad_enterprise.sql`。
 - **扩展**：`uuid-ossp`（UUID 生成）、`ltree`（组织树）。
 - **角色**：迁移创建 `app_writer`、`audit_reader`（预留，当前应用统一用 `app_user`）。
 - **连接池**：默认 5–25 连接，生命周期 1h、空闲 10m。PostgreSQL `max_connections` 建议 ≥ 50。
@@ -344,6 +418,7 @@ server {
 | 011_ldap_and_user_import | LDAP 同步状态字段、用户导入批次记录 |
 | 012_notify_and_approvals | 通知规则/投递记录表、审批单表 |
 | 013_asset_parent_and_data_scope | 资产 parent_id 外设树、部门数据范围 ltree 索引 |
+| 014_ad_enterprise | AD group-to-role 映射表 (ad_group_mappings)、users.data_scope、users.manual_override |
 
 ---
 
@@ -436,6 +511,11 @@ docker compose up -d --build      # 自动重建镜像 + 应用新迁移
 - [ ] `EXTERNAL_URL` 已配置为对外受信域名（启用 G3 url 模式二维码所需）
 - [ ] `DATA_SCOPE_DEPARTMENT` 按组织治理需要决定是否开启（G9）
 - [ ] 审批门 `approval.*.enabled` 按业务流程在系统设置中开启（G7，默认关闭）
+- [ ] `LDAP_PAGE_SIZE` 与 AD 服务器 MaxPageSize 匹配（Wave 3，默认 1000）
+- [ ] `LDAP_SYNC_RECURSIVE` / `LDAP_GROUP_ATTR` 按 LDAP 结构验证默认值（Wave 3）
+- [ ] 组到角色映射（`ad_group_mappings`）已按组织架构配置（Wave 3，Admin UI → LDAP 状态）
+- [ ] 敏感用户（承包商/审计员）已按需设置 `data_scope=self` 限制可见范围（Wave 3）
+- [ ] 手动调整过权限的用户已开启 `manual_override` 防止 AD 同步覆盖（Wave 3）
 
 ---
 
