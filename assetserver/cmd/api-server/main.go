@@ -15,6 +15,7 @@ import (
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/db"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/event"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
+	internalservice "github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -33,7 +34,7 @@ func main() {
 	}
 	log.Printf("Ed25519 Key: kid=%s", km.GetCurrentKeyID())
 
-	// 事件总线 — 挂日志消费者 (后续 Phase I 挂 webhook consumer)
+	// Event bus — log consumer
 	eventTypes := []string{
 		event.EventAssetCreated, event.EventAssetUpdated, event.EventAssetDeleted,
 		event.EventAssetAssigned, event.EventAssetReleased, event.EventAssetTransferred,
@@ -63,6 +64,11 @@ func main() {
 		if err := db.RunMigrations(context.Background(), pool); err != nil {
 			log.Fatalf("Migration error: %v", err)
 		}
+
+		// Phase I: Start webhook dispatcher
+		whRepo := repository.NewWebhookRepo()
+		whDispatcher := internalservice.NewWebhookDispatcher(pool, whRepo)
+		go whDispatcher.Start(context.Background())
 	} else {
 		log.Println("⚠️  DEMO mode: in-memory stores, no PostgreSQL required")
 	}

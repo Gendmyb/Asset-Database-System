@@ -30,6 +30,9 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	maintenanceRepo := repository.NewMaintenanceRepo()
 	stocktakeRepo := repository.NewStocktakeRepo()
 
+	webhookRepo := repository.NewWebhookRepo()
+	webhookH := handler.NewWebhookHandler(webhookRepo, pool)
+
 	// 确保种子用户存在
 	_ = userRepo.EnsureSeedUsers(context.Background(), pool)
 
@@ -397,4 +400,12 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	// ======== Phase H: CSV 导入 ========
 	manager.GET("/assets/import/template", importH.GetTemplate)
 	manager.POST("/assets/import", importH.ImportAssets)
+
+	// ======== Phase I: Webhook management (admin+) ========
+	admin.GET("/admin/webhooks", webhookH.ListEndpoints)
+	admin.POST("/admin/webhooks", webhookH.CreateEndpoint)
+	admin.GET("/admin/webhooks/:id", webhookH.GetEndpoint)
+	admin.PUT("/admin/webhooks/:id", webhookH.UpdateEndpoint)
+	admin.DELETE("/admin/webhooks/:id", webhookH.DeleteEndpoint)
+	admin.GET("/admin/webhooks/:id/deliveries", webhookH.ListDeliveries)
 }
