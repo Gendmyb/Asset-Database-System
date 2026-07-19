@@ -373,16 +373,6 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 		registerProductionRoutes(v1, pool)
 	}
 
-	// Agent 状态 (轻量, viewer+)
-	v1.GET("/dashboard/agents", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"data": gin.H{"online": 0, "offline": 0, "total": 0},
-		})
-	})
-	v1.GET("/agents", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": []gin.H{}})
-	})
-
 	// 静态文件服务 (生产模式: 嵌入前端 SPA)
 	if !demoMode {
 		spaHandler := web.Handler()

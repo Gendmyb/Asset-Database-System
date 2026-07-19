@@ -71,8 +71,8 @@ func registerDemoRoutes(v1 *gin.RouterGroup, demoRepo *DemoAssetRepo) {
 	v1.GET("/users", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"data": []gin.H{
 			{"id": "00000000-0000-4000-a000-000000000010", "username": "admin", "role": "super_admin", "org_id": "00000000-0000-4000-a000-000000000001"},
-			{"id": "00000000-0000-4000-a000-000000000020", "username": "张伟", "role": "operator", "org_id": "00000000-0000-4000-a000-000000000001"},
-			{"id": "00000000-0000-4000-a000-000000000030", "username": "李娜", "role": "operator", "org_id": "00000000-0000-4000-a000-000000000001"},
+			{"id": "00000000-0000-4000-a000-000000000020", "username": "张伟", "role": "manager", "org_id": "00000000-0000-4000-a000-000000000001"},
+			{"id": "00000000-0000-4000-a000-000000000030", "username": "李娜", "role": "manager", "org_id": "00000000-0000-4000-a000-000000000001"},
 			{"id": "00000000-0000-4000-a000-000000000040", "username": "王强", "role": "viewer", "org_id": "00000000-0000-4000-a000-000000000001"},
 		}})
 	})
