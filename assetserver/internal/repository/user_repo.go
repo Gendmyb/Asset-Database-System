@@ -6,18 +6,24 @@ import (
 	"time"
 )
 
-// UserRow 用户
+// UserRow 用户 (Wave 3 T8: 新增 AD 集成相关字段)
 type UserRow struct {
-	ID            string     `json:"id"`
-	Username      string     `json:"username"`
-	Role          string     `json:"role"`
-	Email         string     `json:"email,omitempty"`
-	OrgID         string     `json:"org_id"`
-	Status        string     `json:"status"`
-	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
-	MustChangePwd bool       `json:"must_change_password"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID             string     `json:"id"`
+	Username       string     `json:"username"`
+	Role           string     `json:"role"`
+	Email          string     `json:"email,omitempty"`
+	OrgID          string     `json:"org_id"`
+	Status         string     `json:"status"`
+	LastLoginAt    *time.Time `json:"last_login_at,omitempty"`
+	MustChangePwd  bool       `json:"must_change_password"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	// Wave 3 T8: AD 集成字段
+	Source         string `json:"source,omitempty"`          // 'local' | 'ldap'
+	DisplayName    string `json:"display_name,omitempty"`    // AD displayName / CSV 导入名
+	DataScope      string `json:"data_scope,omitempty"`      // 'inherit' | 'self'
+	ManualOverride bool   `json:"manual_override"`           // admin 手动标记
+	DN             string `json:"dn,omitempty"`              // LDAP distinguishedName
 }
 
 // UserRepo 用户仓库 (无状态 — DBTX 由调用方传入)
@@ -32,7 +38,8 @@ func (r *UserRepo) ListByOrg(ctx context.Context, q DBTX, orgID string) ([]UserR
 	rows, err := q.Query(ctx,
 		`SELECT id, username, role, COALESCE(email,''), org_id::text, status,
 		        COALESCE(last_login_at, '0001-01-01'::timestamptz),
-		        must_change_password, created_at, updated_at
+		        must_change_password, created_at, updated_at,
+		        source, COALESCE(display_name,''), data_scope, manual_override, COALESCE(dn,'')
 		 FROM assets.users WHERE org_id = $1 AND status = 'active' AND deleted_at IS NULL
 		 ORDER BY username`, orgID)
 	if err != nil {
@@ -44,7 +51,8 @@ func (r *UserRepo) ListByOrg(ctx context.Context, q DBTX, orgID string) ([]UserR
 	for rows.Next() {
 		var u UserRow
 		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.Email, &u.OrgID, &u.Status,
-			&u.LastLoginAt, &u.MustChangePwd, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			&u.LastLoginAt, &u.MustChangePwd, &u.CreatedAt, &u.UpdatedAt,
+			&u.Source, &u.DisplayName, &u.DataScope, &u.ManualOverride, &u.DN); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -106,7 +114,8 @@ func (r *UserRepo) ListAll(ctx context.Context, q DBTX) ([]UserRow, error) {
 	rows, err := q.Query(ctx,
 		`SELECT id, username, role, COALESCE(email,''), org_id::text, status,
 		        COALESCE(last_login_at, '0001-01-01'::timestamptz),
-		        must_change_password, created_at, updated_at
+		        must_change_password, created_at, updated_at,
+		        source, COALESCE(display_name,''), data_scope, manual_override, COALESCE(dn,'')
 		 FROM assets.users WHERE deleted_at IS NULL ORDER BY username`)
 	if err != nil {
 		return nil, err
@@ -136,13 +145,14 @@ func (r *UserRepo) CreateUser(ctx context.Context, q DBTX, username, passwordHas
 	return id, err
 }
 
-// UpdateUser 更新用户 role/status/email
+// UpdateUser 更新用户 role/status/email (Wave 3 T8: 自动置 manual_override=true)
 func (r *UserRepo) UpdateUser(ctx context.Context, q DBTX, userID string, updates map[string]interface{}) error {
 	_, err := q.Exec(ctx,
 		`UPDATE assets.users SET
 			role = COALESCE($2::varchar, role),
 			status = COALESCE($3::varchar, status),
 			email = COALESCE($4::varchar, email),
+			manual_override = true,
 			updated_at = now()
 		 WHERE id = $1`,
 		userID, updates["role"], updates["status"], updates["email"],

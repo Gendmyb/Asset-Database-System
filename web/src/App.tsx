@@ -18,6 +18,7 @@ const ReportsPage = lazy(() => import('./pages/ReportsPage'))
 const UsersPage = lazy(() => import('./pages/admin/Users'))
 const SettingsPage = lazy(() => import('./pages/admin/Settings'))
 const WebhooksPage = lazy(() => import('./pages/admin/Webhooks'))
+const DirectoryPage = lazy(() => import('./pages/admin/Directory'))
 
 function PageLoader() {
   return (
@@ -139,6 +140,14 @@ export default function App() {
               element={
                 <Suspense fallback={<PageLoader />}>
                   <WebhooksPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="directory"
+              element={
+                <Suspense fallback={<PageLoader />}>
+                  <DirectoryPage />
                 </Suspense>
               }
             />

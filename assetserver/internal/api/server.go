@@ -267,7 +267,7 @@ func NewServer(cfg *config.Config, km *crypto.KeyManager, pool *pgxpool.Pool, de
 		}
 		orgUUID := "00000000-0000-4000-a000-000000000001"
 		userUUID := "00000000-0000-4000-a000-000000000010"
-		token, _ := km.IssueAccessToken(c, userUUID, "super_admin", orgUUID)
+		token, _ := km.IssueAccessToken(c, userUUID, "super_admin", orgUUID, "")
 		c.JSON(http.StatusOK, gin.H{
 			"access_token":  token,
 			"refresh_token": "demo-refresh-placeholder",

@@ -78,6 +78,18 @@ type LDAPConfig struct {
 	AttrOrg         string // department
 	// 离职处理: 同步时 AD 不再返回的用户做软删除
 	SyncDisabledOnly bool // true 则仅禁用不软删除 (保留可登录历史), 默认 false=软删除
+
+	// === Wave 3 T0 新增: 企业化同步控制 ===
+	// PageSize LDAP 分页大小 (ControlPaging), 默认 500; 0 或负数=不分页 (最大 1000)
+	PageSize int
+	// SyncRecursive 是否递归展开组成员 (LDAP_MATCHING_RULE_IN_CHAIN OID 1.2.840.113556.1.4.1941)
+	// true=递归 (含嵌套组), false=仅直接成员 (默认, 性能更优)
+	SyncRecursive bool
+	// LinkExisting 同步时是否自动链接同名本地账号 (保留其 id/角色/历史)
+	// 默认 false=仅跳过冲突, true=将 source='local' 的同名用户更新为 source='ldap'
+	LinkExisting bool
+	// GroupAttr 组成员属性名 (默认 memberOf, 也可配为 tokenGroups 等)
+	GroupAttr string
 }
 
 type ServerConfig struct {
@@ -213,6 +225,11 @@ func loadLDAPConfig() LDAPConfig {
 		AttrDN:           getEnv("LDAP_ATTR_DN", "distinguishedName"),
 		AttrOrg:          getEnv("LDAP_ATTR_ORG", "department"),
 		SyncDisabledOnly: getEnvBool("LDAP_SYNC_DISABLE_ONLY", false),
+		// Wave 3 T0: 企业化同步控制
+		PageSize:      getEnvInt("LDAP_PAGE_SIZE", 500),
+		SyncRecursive: getEnvBool("LDAP_SYNC_RECURSIVE", false),
+		LinkExisting:  getEnvBool("LDAP_LINK_EXISTING", false),
+		GroupAttr:     getEnv("LDAP_GROUP_ATTR", "memberOf"),
 	}
 	// 仅在关键字段齐全时启用 LDAP
 	if cfg.Host != "" && cfg.BaseDN != "" && cfg.BindDN != "" {

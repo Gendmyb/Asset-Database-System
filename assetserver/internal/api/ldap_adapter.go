@@ -33,15 +33,17 @@ func (a *ldapAdapter) Authenticate(ctx context.Context, username, password strin
 	}, nil
 }
 
-func (a *ldapAdapter) EnsureUserRow(ctx context.Context, r *service.LDAPAuthResult, defaultOrgID string) (string, string, string, error) {
+func (a *ldapAdapter) EnsureUserRow(ctx context.Context, r *service.LDAPAuthResult, defaultOrgID string) (string, string, string, string, error) {
 	if r == nil {
-		return "", "", "", nil
+		return "", "", "", "", nil
 	}
 	return a.inner.EnsureUserRow(ctx, &ldap.AuthenticateResult{
-		Valid:       r.Valid,
-		Username:    r.Username,
-		DisplayName: r.DisplayName,
-		Email:       r.Email,
-		DN:          r.DN,
+		Valid:              r.Valid,
+		Username:           r.Username,
+		DisplayName:        r.DisplayName,
+		Email:              r.Email,
+		DN:                 r.DN,
+		MemberOf:           r.MemberOf,
+		UserAccountControl: r.UserAccountControl,
 	}, defaultOrgID)
 }

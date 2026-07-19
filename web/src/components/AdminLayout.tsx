@@ -5,6 +5,7 @@ const TABS: { to: string; label: string; end?: boolean }[] = [
   { to: '/admin/users', label: '用户', end: true },
   { to: '/admin/settings', label: '系统设置' },
   { to: '/admin/webhooks', label: 'Webhooks' },
+  { to: '/admin/directory', label: '目录集成' },
 ]
 
 export default function AdminLayout() {

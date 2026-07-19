@@ -18,11 +18,12 @@ import (
 	"github.com/google/uuid"
 )
 
-// CustomClaims 自定义 JWT Claims (含 org_id 和 role)
+// CustomClaims 自定义 JWT Claims (含 org_id、role、data_scope)
 type CustomClaims struct {
 	jwt.RegisteredClaims
-	OrgID string `json:"org_id"`
-	Role  string `json:"role"`
+	OrgID     string `json:"org_id"`
+	Role      string `json:"role"`
+	DataScope string `json:"data_scope"` // Wave 3 T5: 'inherit' | 'self'
 }
 
 // KeyManager — Vault/KMS 密钥管理
@@ -132,9 +133,10 @@ func (km *KeyManager) VerifyJWTLeeway(tokenString string) (*middleware.Claims, e
 	}
 
 	return &middleware.Claims{
-		UserID: claims.Subject,
-		OrgID:  orgID,
-		Role:   role,
+		UserID:    claims.Subject,
+		OrgID:     orgID,
+		Role:      role,
+		DataScope: claims.DataScope,
 	}, nil
 }
 
@@ -157,9 +159,10 @@ func (km *KeyManager) ExtractClaimsNoVerify(tokenString string) *middleware.Clai
 		role = "viewer"
 	}
 	return &middleware.Claims{
-		UserID: claims.Subject,
-		OrgID:  orgID,
-		Role:   role,
+		UserID:    claims.Subject,
+		OrgID:     orgID,
+		Role:      role,
+		DataScope: claims.DataScope,
 	}
 }
 
@@ -200,17 +203,21 @@ func (km *KeyManager) VerifyJWT(tokenString string) (*middleware.Claims, error) 
 	}
 
 	return &middleware.Claims{
-		UserID: claims.Subject,
-		OrgID:  orgID,
-		Role:   role,
+		UserID:    claims.Subject,
+		OrgID:     orgID,
+		Role:      role,
+		DataScope: claims.DataScope,
 	}, nil
 }
 
-// IssueAccessToken 签发 access token (含 org_id + role)
-func (km *KeyManager) IssueAccessToken(ctx context.Context, userID, role, orgID string) (string, error) {
+// IssueAccessToken 签发 access token (含 org_id + role + data_scope)
+func (km *KeyManager) IssueAccessToken(ctx context.Context, userID, role, orgID, dataScope string) (string, error) {
 	privKey, err := km.GetPrivateKey()
 	if err != nil {
 		return "", err
+	}
+	if dataScope == "" {
+		dataScope = "inherit"
 	}
 
 	now := time.Now()
@@ -223,8 +230,9 @@ func (km *KeyManager) IssueAccessToken(ctx context.Context, userID, role, orgID 
 			IssuedAt:  jwt.NewNumericDate(now),
 			ID:        uuid.New().String(),
 		},
-		OrgID: orgID,
-		Role:  role,
+		OrgID:     orgID,
+		Role:      role,
+		DataScope: dataScope,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)

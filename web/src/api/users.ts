@@ -8,6 +8,13 @@ export interface User {
   email?: string
   status?: string
   created_at?: string
+  // Wave 3 T8: AD 集成字段
+  source?: string
+  display_name?: string
+  data_scope?: string
+  manual_override?: boolean
+  dn?: string
+  last_login_at?: string
 }
 
 export interface CreateUserData {

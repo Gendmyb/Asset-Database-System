@@ -11,6 +11,7 @@ import Select from '../../components/ui/Select'
 import FormField from '../../components/ui/FormField'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import * as usersApi from '../../api/users'
+import * as directoryApi from '../../api/directory'
 import { getApiError } from '../../lib/errors'
 
 interface CreateUserForm {
@@ -86,10 +87,55 @@ export default function Users() {
     onError: (err) => toast.error(getApiError(err)),
   })
 
+  const linkADMutation = useMutation({
+    mutationFn: ({ id, externalId }: { id: string; externalId: string }) =>
+      directoryApi.linkAD(id, externalId),
+    onSuccess: () => {
+      toast.success('已链接到 AD 账号')
+      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] })
+    },
+    onError: (err) => toast.error(getApiError(err)),
+  })
+
+  const unlinkADMutation = useMutation({
+    mutationFn: (id: string) => directoryApi.unlinkAD(id),
+    onSuccess: () => {
+      toast.success('已解除 AD 链接')
+      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] })
+    },
+    onError: (err) => toast.error(getApiError(err)),
+  })
+
   const userList = Array.isArray(users) ? users : []
 
   const columns: Column<any>[] = [
+    {
+      key: 'source',
+      label: '来源',
+      render: (row: any) => (
+        <span style={{
+          display: 'inline-block',
+          padding: '1px 6px',
+          borderRadius: 4,
+          background: row.source === 'ldap' ? 'var(--blue-2)' : 'var(--gray-2)',
+          color: row.source === 'ldap' ? 'var(--blue-11)' : 'var(--text-secondary)',
+          fontSize: 10,
+          fontWeight: 500,
+        }}>
+          {row.source === 'ldap' ? 'AD' : '本地'}
+        </span>
+      ),
+    },
     { key: 'username', label: '用户名' },
+    {
+      key: 'display_name',
+      label: '显示名',
+      render: (row: any) => (
+        <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+          {row.display_name || row.username}
+        </span>
+      ),
+    },
     {
       key: 'role',
       label: '角色',
@@ -166,6 +212,29 @@ export default function Users() {
           >
             删除
           </Button>
+          {row.source === 'local' ? (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                const extId = prompt('输入 AD 账号 (sAMAccountName):', row.username)
+                if (extId) linkADMutation.mutate({ id: row.id, externalId: extId })
+              }}
+              style={{ fontSize: 12, padding: '4px 8px' }}
+            >
+              链接AD
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                if (confirm('确定解除 AD 链接？该用户将转为本地用户。'))
+                  unlinkADMutation.mutate(row.id)
+              }}
+              style={{ fontSize: 12, padding: '4px 8px' }}
+            >
+              解除AD
+            </Button>
+          )}
         </div>
       ),
     },

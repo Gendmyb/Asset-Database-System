@@ -104,13 +104,16 @@ func rowToResponse(r *repository.AssetRow) AssetResponse {
 // mode 由 DATA_SCOPE_DEPARTMENT 配置开关注入。
 func orgScopeFromCtx(c *gin.Context) repository.OrgScope {
 	mode := repository.ScopeOrg
-	if middleware.DataScopeMode(c) {
+	if c.GetString("data_scope") == "self" {
+		mode = repository.ScopeSelf
+	} else if middleware.DataScopeMode(c) {
 		mode = repository.ScopeDepartment
 	}
 	return repository.OrgScope{
-		OrgID: c.GetString("org_id"),
-		Role:  c.GetString("role"),
-		Mode:  mode,
+		OrgID:  c.GetString("org_id"),
+		Role:   c.GetString("role"),
+		Mode:   mode,
+		UserID: c.GetString("user_id"),
 	}
 }
 

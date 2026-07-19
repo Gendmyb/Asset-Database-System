@@ -57,9 +57,10 @@ type ClaimsVerifier interface {
 
 // Claims 简化的 JWT Claims
 type Claims struct {
-	UserID string
-	Role   string
-	OrgID  string
+	UserID    string
+	Role      string
+	OrgID     string
+	DataScope string // Wave 3 T5: 'inherit' | 'self'
 }
 
 // Auth JWT 验证中间件 (EdDSA)
@@ -84,6 +85,7 @@ func Auth(verifier ClaimsVerifier) gin.HandlerFunc {
 		c.Set("user_id", claims.UserID)
 		c.Set("role", claims.Role)
 		c.Set("org_id", claims.OrgID)
+		c.Set("data_scope", claims.DataScope) // Wave 3 T5
 		c.Next()
 	}
 }

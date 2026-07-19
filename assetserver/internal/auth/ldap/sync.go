@@ -1,10 +1,13 @@
-// Package ldap — 同步 (AD -> 本系统)
+// Package ldap — 同步 (AD -> 本系统) Wave 3 T3 重写
 //
 // 语义:
-//   - 组织 (organizations 表): upsert, 按 name 唯一; AD 的 department 字符串直接作为一级组织。
-//   - 用户 (users 表): upsert by (source='ldap', external_id=username);
-//     AD 已不存在 -> 软删除 (复用 user_repo.SoftDelete) 或仅禁用 (SyncDisabledOnly)。
-//   - 同步结果摘要写入 audit_log (不含密码)。
+//   - 按启用的安全组 (ad_group_mappings.sync_enabled=true) 圈人: 不按组过滤则不拉用户
+//   - 用户角色来自 resolveRoleForGroups, 不再硬编码 viewer
+//   - manual_override=true 时仅刷新 profile 字段, 不覆盖 role/status/scope
+//   - AD 禁用 (userAccountControl bit 1) → 本地禁用
+//   - 移出所有启用组的用户 → 禁用 (不软删, 保留审计)
+//   - 组织: 按 department 一级拍平 (与旧版一致)
+//   - 审计摘要含增/改/禁/跳过计数
 //
 // 调度: 暴露 RunSyncOnce(ctx) 供 G4 调度器或 /admin/ldap/sync 手动触发;
 //
@@ -16,31 +19,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/audit"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // SyncService LDAP 同步服务
 type SyncService struct {
-	client DirectoryClient
-	pool   *pgxpool.Pool
+	client       DirectoryClient
+	pool         *pgxpool.Pool
+	groupRepo    *repository.ADGroupRepo
 }
 
-// NewSyncService 构造同步服务
+// NewSyncService 构造同步服务 (Wave 3 T3: 新增 groupRepo 用于组映射)
 func NewSyncService(client DirectoryClient, pool *pgxpool.Pool) *SyncService {
-	return &SyncService{client: client, pool: pool}
+	return &SyncService{client: client, pool: pool, groupRepo: repository.NewADGroupRepo()}
 }
 
-// SyncResult 同步结果 (可入审计/返回 API)
+// SyncResult 同步结果 (可入审计/返回 API) — Wave 3 增强字段
 type SyncResult struct {
-	Fetched       int `json:"fetched"`
-	UsersCreated  int `json:"users_created"`
-	UsersUpdated  int `json:"users_updated"`
-	UsersDisabled int `json:"users_disabled"`
-	OrgsCreated   int `json:"orgs_created"`
-	Errors        int `json:"errors"`
+	Fetched        int `json:"fetched"`
+	UsersCreated   int `json:"users_created"`
+	UsersUpdated   int `json:"users_updated"`
+	UsersDisabled  int `json:"users_disabled"`
+	UsersSkipped   int `json:"users_skipped"`  // manual_override 跳过
+	OrgsCreated    int `json:"orgs_created"`
+	Errors         int `json:"errors"`
+	ADUsersDisabled int `json:"ad_users_disabled"` // AD 中已禁用的用户数
 }
+
+// adUserAccountDisabled AD userAccountControl 中禁用标志 (bit 1)
+const adUserAccountDisabled = 0x2
 
 // RunSyncOnce 执行一次单向 (AD -> DB) 同步
 // actorID 触发者 (定时任务为系统用户 UUID; 手动为 admin id), 用于审计归属。
@@ -53,13 +64,35 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 	}
 	result := &SyncResult{}
 
-	users, err := s.client.SearchUsers(ctx)
+	// 1. 加载启用的组映射
+	tx0, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	mappings, err := s.groupRepo.ListEnabled(ctx, tx0)
+	tx0.Rollback(ctx) // 读操作不需要保持事务
+	if err != nil {
+		return nil, fmt.Errorf("load group mappings: %w", err)
+	}
+	if len(mappings) == 0 {
+		slog.Warn("ldap sync: no enabled group mappings, skipping (no groups to sync)")
+		return result, nil
+	}
+
+	// 2. 收集启用组的 DN
+	groupDNs := make([]string, 0, len(mappings))
+	for _, m := range mappings {
+		groupDNs = append(groupDNs, m.GroupDN)
+	}
+
+	// 3. 按组拉取 AD 用户
+	users, err := s.client.SearchUsers(ctx, groupDNs)
 	if err != nil {
 		return nil, fmt.Errorf("search users: %w", err)
 	}
 	result.Fetched = len(users)
 
-	// 收集 AD 中存在的部门 -> upsert 组织
+	// 4. 收集部门 -> upsert 组织 (一级拍平, 与旧版一致)
 	deptSet := make(map[string]struct{})
 	for _, u := range users {
 		if u.Department != "" {
@@ -73,11 +106,9 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. upsert organizations (按 name 唯一, 一级组织)
+	// 5. upsert organizations
 	deptToOrgID := make(map[string]string)
 	for dept := range deptSet {
-		// 先查一级组织 (depth=1) 是否已存在同名; 不存在再插入。
-		// 不加全局 UNIQUE 约束: 同名但不同父的子组织允许共存。
 		var orgIDVal string
 		err := tx.QueryRow(ctx,
 			`SELECT id::text FROM assets.organizations
@@ -87,7 +118,6 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 			deptToOrgID[dept] = orgIDVal
 			continue
 		}
-		// 插入新一级组织
 		err = tx.QueryRow(ctx,
 			`INSERT INTO assets.organizations (name, path, depth, created_at, updated_at)
 			 VALUES ($1, $2::ltree, 1, now(), now())
@@ -103,20 +133,28 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 		result.OrgsCreated++
 	}
 
-	// 2. upsert users
-	// LDAP 用户登录后无本地密码; password_hash 用占位符 (无法本地校验)。
-	// 默认组织兜底 (无 department 的 AD 用户)
+	// 6. upsert users (按组成员 → 角色解析)
 	const defaultOrgID = "00000000-0000-4000-a000-000000000001"
 	seenExternalIDs := make(map[string]struct{}, len(users))
 	for _, u := range users {
 		seenExternalIDs[u.Username] = struct{}{}
+
+		// 6a. AD 禁用检查
+		if u.UserAccountControl&adUserAccountDisabled != 0 {
+			result.ADUsersDisabled++
+			slog.Info("ldap sync: AD disabled user", "username", u.Username)
+			// 仍然更新本地状态为 disabled (不跳过)
+		}
+
+		// 6b. 角色解析
+		resolved := ResolveRoleForGroups(u.MemberOf, mappings)
+
 		targetOrg := defaultOrgID
 		if id, ok := deptToOrgID[u.Department]; ok {
 			targetOrg = id
 		}
 
-		// upsert by (source='ldap', external_id=username)
-		// 先查是否已有 LDAP 用户
+		// 6c. 查找现有 LDAP 用户
 		var existingID string
 		_ = tx.QueryRow(ctx,
 			`SELECT id::text FROM assets.users
@@ -124,7 +162,7 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 		).Scan(&existingID)
 
 		if existingID == "" {
-			// 新增: 但需排除 username 与本地用户冲突
+			// 6d. 新建 — 检查本地冲突
 			var localConflict bool
 			_ = tx.QueryRow(ctx,
 				`SELECT EXISTS(SELECT 1 FROM assets.users WHERE username = $1 AND source = 'local')`,
@@ -136,13 +174,18 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 				result.Errors++
 				continue
 			}
+			// 确定新用户的 status: AD disabled → disabled
+			status := "active"
+			if u.UserAccountControl&adUserAccountDisabled != 0 {
+				status = "disabled"
+			}
 			_, err := tx.Exec(ctx,
 				`INSERT INTO assets.users
 				   (org_id, username, password_hash, role, email, status, source,
-				    external_id, display_name, dn, must_change_password, created_at, updated_at)
-				 VALUES ($1, $2, '!', 'viewer', $3, 'active', 'ldap', $4, $5, $6, false, now(), now())`,
-				targetOrg, u.Username, nullableStr(u.Email), u.Username,
-				nullableStr(u.DisplayName), nullableStr(u.DN),
+				    external_id, display_name, dn, data_scope, must_change_password, created_at, updated_at)
+				 VALUES ($1, $2, '!', $3, $4, $5, 'ldap', $6, $7, $8, $9, false, now(), now())`,
+				targetOrg, u.Username, resolved.Role, nullableStr(u.Email), status,
+				u.Username, nullableStr(u.DisplayName), nullableStr(u.DN), resolved.DataScope,
 			)
 			if err != nil {
 				slog.Warn("ldap sync: user insert failed", "username", u.Username, "err", err)
@@ -151,32 +194,63 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 			}
 			result.UsersCreated++
 		} else {
-			// 更新 (含复活软删除)
-			if _, err := tx.Exec(ctx,
-				`UPDATE assets.users SET
-				   email = COALESCE(NULLIF($2,''), email),
-				   display_name = COALESCE(NULLIF($3,''), display_name),
-				   dn = COALESCE(NULLIF($4,''), dn),
-				   org_id = $5,
-				   status = 'active',
-				   deleted_at = NULL,
-				   updated_at = now()
-				 WHERE id = $1`,
-				existingID, u.Email, u.DisplayName, u.DN, targetOrg,
-			); err != nil {
-				slog.Warn("ldap sync: user update failed", "username", u.Username, "err", err)
-				result.Errors++
-				continue
+			// 6e. 更新 — 检查 manual_override
+			var manualOverride bool
+			_ = tx.QueryRow(ctx,
+				`SELECT manual_override FROM assets.users WHERE id = $1`, existingID,
+			).Scan(&manualOverride)
+
+			if manualOverride {
+				// 仅刷新 profile 字段, 不覆盖 role/status/scope
+				if _, err := tx.Exec(ctx,
+					`UPDATE assets.users SET
+					   email = COALESCE(NULLIF($2,''), email),
+					   display_name = COALESCE(NULLIF($3,''), display_name),
+					   dn = COALESCE(NULLIF($4,''), dn),
+					   org_id = $5,
+					   deleted_at = NULL,
+					   updated_at = now()
+					 WHERE id = $1`,
+					existingID, nullableStr(u.Email), nullableStr(u.DisplayName), nullableStr(u.DN), targetOrg,
+				); err != nil {
+					slog.Warn("ldap sync: user update (override) failed", "username", u.Username, "err", err)
+					result.Errors++
+					continue
+				}
+				result.UsersSkipped++
+			} else {
+				status := "active"
+				if u.UserAccountControl&adUserAccountDisabled != 0 {
+					status = "disabled"
+				}
+				if _, err := tx.Exec(ctx,
+					`UPDATE assets.users SET
+					   email = COALESCE(NULLIF($2,''), email),
+					   display_name = COALESCE(NULLIF($3,''), display_name),
+					   dn = COALESCE(NULLIF($4,''), dn),
+					   org_id = $5,
+					   role = $6,
+					   data_scope = $7,
+					   status = $8,
+					   deleted_at = NULL,
+					   updated_at = now()
+					 WHERE id = $1`,
+					existingID, nullableStr(u.Email), nullableStr(u.DisplayName), nullableStr(u.DN),
+					targetOrg, resolved.Role, resolved.DataScope, status,
+				); err != nil {
+					slog.Warn("ldap sync: user update failed", "username", u.Username, "err", err)
+					result.Errors++
+					continue
+				}
+				result.UsersUpdated++
 			}
-			result.UsersUpdated++
 		}
 	}
 
-	// 3. 处理 AD 中已不存在的 LDAP 用户 (软删除 / 禁用)
-	// 拉取当前 DB 中所有 LDAP 活跃用户
+	// 7. 处理 AD 中已不存在的 LDAP 用户 (不在任何启用组 → 禁用)
 	rows, err := tx.Query(ctx,
 		`SELECT id::text, external_id FROM assets.users
-		 WHERE source = 'ldap' AND deleted_at IS NULL`)
+		 WHERE source = 'ldap' AND deleted_at IS NULL AND status = 'active'`)
 	if err != nil {
 		return nil, fmt.Errorf("list ldap users: %w", err)
 	}
@@ -194,19 +268,13 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 	rows.Close()
 
 	for _, d := range toDisable {
-		if s.syncDisabledOnly() {
-			_, _ = tx.Exec(ctx,
-				`UPDATE assets.users SET status = 'disabled', updated_at = now() WHERE id = $1`, d.id)
-		} else {
-			_, _ = tx.Exec(ctx,
-				`UPDATE assets.users SET deleted_at = now(), status = 'disabled', updated_at = now()
-				 WHERE id = $1 AND deleted_at IS NULL`, d.id)
-		}
+		// 仅禁用不软删: 保留审计与领用历史
+		_, _ = tx.Exec(ctx,
+			`UPDATE assets.users SET status = 'disabled', updated_at = now() WHERE id = $1`, d.id)
 		result.UsersDisabled++
 	}
 
-	// 4. 审计 (摘要入 audit_log, 不含凭据)
-	// 用独立事务写审计, 与业务事务解耦: 审计失败仅记日志, 不影响主事务提交。
+	// 8. 审计摘要
 	summary, _ := json.Marshal(result)
 	summary = truncateAuditMetadata(summary)
 	if err := writeAuditSeparately(ctx, s.pool, audit.Entry{
@@ -223,15 +291,18 @@ func (s *SyncService) RunSyncOnce(ctx context.Context, actorID, orgID string) (*
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit sync: %w", err)
 	}
-	slog.Info("ldap sync complete", "result", result)
+	slog.Info("ldap sync complete",
+		"created", result.UsersCreated,
+		"updated", result.UsersUpdated,
+		"disabled", result.UsersDisabled,
+		"skipped", result.UsersSkipped,
+		"ad_disabled", result.ADUsersDisabled,
+	)
 	return result, nil
 }
 
 // truncateAuditMetadata 确保 audit metadata::text 不超过 4096 字节 (audit_log CHECK 约束)。
-// metadata 列存的是完整 Entry JSON (含 NewValues), 故对 summary 预留 Entry 包装字段的空间。
-// 超长时替换为占位 JSON, 防止 INSERT 失败导致事务中毒。
 func truncateAuditMetadata(raw []byte) []byte {
-	// 3500 字节留给 summary, 剩余 ~500 字节给 Entry 包装字段 (TableName/Action/OrgID/ActorID)
 	const maxSummaryLen = 3500
 	if len(raw) <= maxSummaryLen {
 		return raw
@@ -240,7 +311,6 @@ func truncateAuditMetadata(raw []byte) []byte {
 }
 
 // writeAuditSeparately 在独立事务中写入审计条目, 与业务事务解耦。
-// 失败仅返回 error 由调用方记日志, 不回滚业务事务。
 func writeAuditSeparately(ctx context.Context, pool *pgxpool.Pool, e audit.Entry) error {
 	if pool == nil {
 		return nil
@@ -257,15 +327,6 @@ func writeAuditSeparately(ctx context.Context, pool *pgxpool.Pool, e audit.Entry
 		return fmt.Errorf("commit audit: %w", err)
 	}
 	return nil
-}
-
-// syncDisabledOnly 读取运行时配置 (从 client 转型获取)
-// 这里通过 client.adClient.cfg 读取; 测试时可注入 mock。
-func (s *SyncService) syncDisabledOnly() bool {
-	if c, ok := s.client.(*adClient); ok {
-		return c.cfg.SyncDisabledOnly
-	}
-	return false
 }
 
 // sanitizeLTree 将部门名转为合法 ltree 标签 (字母/数字/下划线)
@@ -286,5 +347,8 @@ func sanitizeLTree(s string) string {
 	return string(out)
 }
 
-// nullableStr 空串返回 NULL 友好参数: 仍传 string, 由 SQL COALESCE/NULLIF 处理
+// nullableStr 空串返回 NULL 友好参数
 func nullableStr(s string) string { return s }
+
+// ensure strings import is used (for the split in sanitizeLTree)
+var _ = strings.TrimSpace

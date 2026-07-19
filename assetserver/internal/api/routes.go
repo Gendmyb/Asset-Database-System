@@ -25,17 +25,22 @@ import (
 
 // registerProductionRoutes 注册生产模式 (PG) 路由
 func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *config.Config) {
-	// orgScopeFromCtx 从 gin 上下文构建行级数据权限范围 (G9)。
+	// orgScopeFromCtx 从 gin 上下文构建行级数据权限范围 (G9 + T5)。
 	// 闭包捕获 cfg 以读取 DATA_SCOPE_DEPARTMENT 开关。
 	orgScopeFromCtx := func(c *gin.Context) repository.OrgScope {
 		mode := repository.ScopeOrg
-		if cfg != nil && cfg.DataScope.Department {
+		// T5: 用户 data_scope='self' → 个人只读
+		if c.GetString("data_scope") == "self" {
+			mode = repository.ScopeSelf
+		} else if cfg != nil && cfg.DataScope.Department {
+			// G9: 部门级可见范围
 			mode = repository.ScopeDepartment
 		}
 		return repository.OrgScope{
-			OrgID: c.GetString("org_id"),
-			Role:  c.GetString("role"),
-			Mode:  mode,
+			OrgID:  c.GetString("org_id"),
+			Role:   c.GetString("role"),
+			Mode:   mode,
+			UserID: c.GetString("user_id"), // T5: ScopeSelf 需要
 		}
 	}
 	assetRepo := repository.NewAssetRepo()
@@ -512,4 +517,28 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool, cfg *conf
 	admin.POST("/admin/notify/rules", notifyRuleH.Create)
 	admin.DELETE("/admin/notify/rules/:id", notifyRuleH.Delete)
 	admin.GET("/admin/notify/deliveries", notifyRuleH.ListDeliveries)
+
+	// ======== Wave 3 T7: AD 目录集成管理 (admin+) ========
+	dirH := handler.NewDirectoryHandler(pool)
+	// LDAP 状态回调
+	if cfg != nil && cfg.LDAP.Enable {
+		ldapClient := ldap.NewClient(cfg.LDAP)
+		dirH.SetLDAPStatusCallback(func(ctx context.Context) map[string]interface{} {
+			status := map[string]interface{}{
+				"enabled": true,
+				"host":    cfg.LDAP.Host,
+				"port":    cfg.LDAP.Port,
+			}
+			_, err := ldapClient.SearchOne(ctx, "_health_check_")
+			status["connected"] = (err == nil)
+			return status
+		})
+	}
+	admin.GET("/admin/ad-groups", dirH.ListGroupMappings)
+	admin.POST("/admin/ad-groups", dirH.CreateGroupMapping)
+	admin.PUT("/admin/ad-groups/:id", dirH.UpdateGroupMapping)
+	admin.DELETE("/admin/ad-groups/:id", dirH.DeleteGroupMapping)
+	admin.GET("/admin/ldap/status", dirH.GetLDAPStatus)
+	admin.POST("/admin/users/:id/link-ad", dirH.LinkAD)
+	admin.DELETE("/admin/users/:id/link-ad", dirH.UnlinkAD)
 }

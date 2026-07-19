@@ -22,16 +22,18 @@ import (
 // 抽象出来便于单测 mock, 也避免本包循环依赖 ldap 包。
 type LDAPAuthenticator interface {
 	Authenticate(ctx context.Context, username, password string) (*LDAPAuthResult, error)
-	EnsureUserRow(ctx context.Context, r *LDAPAuthResult, defaultOrgID string) (userID, role, orgID string, err error)
+	EnsureUserRow(ctx context.Context, r *LDAPAuthResult, defaultOrgID string) (userID, role, orgID, dataScope string, err error)
 }
 
 // LDAPAuthResult LDAP 校验结果 (与 ldap.AuthenticateResult 同形, 解耦复制)
 type LDAPAuthResult struct {
-	Valid       bool
-	Username    string
-	DisplayName string
-	Email       string
-	DN          string
+	Valid              bool
+	Username           string
+	DisplayName        string
+	Email              string
+	DN                 string
+	MemberOf           []string // Wave 3 T4
+	UserAccountControl int      // Wave 3 T4
 }
 
 // AuthService 认证服务
@@ -194,16 +196,27 @@ func (s *AuthService) Login(ctx context.Context, username, password string) (*Lo
 			if existingStatus, ok := s.lookupLocalStatus(ctx, username); ok && existingStatus != "active" {
 				return nil, fmt.Errorf("账号已禁用")
 			}
-			// upsert 本系统用户行
+			// upsert 本系统用户行 (T4: 返回 data_scope)
 			defaultOrg := "00000000-0000-4000-a000-000000000001"
-			uid, uRole, uOrgID, err := s.ldap.EnsureUserRow(ctx, r, defaultOrg)
+			uid, uRole, uOrgID, uDataScope, err := s.ldap.EnsureUserRow(ctx, r, defaultOrg)
 			if err != nil {
 				slog.Warn("ldap ensure user row failed",
 					"username", username, "err", err)
 				return nil, fmt.Errorf("用户名或密码错误")
 			}
 			s.failures.resetFailures(username)
-			return s.finishLogin(ctx, uid, username, uRole, uOrgID, r.Email)
+			// T4: 推送 data_scope 进 JWT
+			result, err := s.finishLogin(ctx, uid, username, uRole, uOrgID, r.Email)
+			if err != nil {
+				return nil, err
+			}
+			// T4 note: finishLogin already queries data_scope from DB, but for freshly created
+			// users we want to use the resolved scope. Override via a follow-up update.
+			if uDataScope != "" && uDataScope != "inherit" {
+				_, _ = s.pool.Exec(ctx,
+					`UPDATE assets.users SET data_scope = $1 WHERE id = $2`, uDataScope, uid)
+			}
+			return result, nil
 		}
 		// LDAP 失败: 落到统一错误
 		slog.Info("ldap auth failed", "username", username)
@@ -230,7 +243,13 @@ func (s *AuthService) lookupLocalStatus(ctx context.Context, username string) (s
 
 // finishLogin 签发 access/refresh token, 更新 last_login_at
 func (s *AuthService) finishLogin(ctx context.Context, userID, username, role, orgID, email string) (*LoginResult, error) {
-	accessToken, err := s.km.IssueAccessToken(ctx, userID, role, orgID)
+	// 查询用户 data_scope (T5)
+	dataScope := "inherit"
+	_ = s.pool.QueryRow(ctx,
+		`SELECT data_scope FROM assets.users WHERE id = $1`, userID,
+	).Scan(&dataScope)
+
+	accessToken, err := s.km.IssueAccessToken(ctx, userID, role, orgID, dataScope)
 	if err != nil {
 		return nil, fmt.Errorf("签发 token 失败: %w", err)
 	}
@@ -311,13 +330,13 @@ func (s *AuthService) Refresh(ctx context.Context, accessToken, refreshToken str
 	}
 
 	// 6. 签发新 access token
-	// 需要查用户的 role 和 org_id
-	var role, orgID string
+	// 需要查用户的 role, org_id 和 data_scope (T5)
+	var role, orgID, dataScope string
 	_ = s.pool.QueryRow(ctx,
-		`SELECT role, org_id::text FROM assets.users WHERE id = $1`, userID,
-	).Scan(&role, &orgID)
+		`SELECT role, org_id::text, data_scope FROM assets.users WHERE id = $1`, userID,
+	).Scan(&role, &orgID, &dataScope)
 
-	newAccessToken, err := s.km.IssueAccessToken(ctx, userID, role, orgID)
+	newAccessToken, err := s.km.IssueAccessToken(ctx, userID, role, orgID, dataScope)
 	if err != nil {
 		return nil, fmt.Errorf("签发新 token 失败: %w", err)
 	}

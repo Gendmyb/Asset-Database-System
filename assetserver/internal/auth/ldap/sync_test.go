@@ -12,7 +12,7 @@ type mockClient struct {
 	bindFail map[string]bool // username -> bind 应失败
 }
 
-func (m *mockClient) SearchUsers(ctx context.Context) ([]DirUser, error) {
+func (m *mockClient) SearchUsers(ctx context.Context, groupDNs []string) ([]DirUser, error) {
 	return m.users, nil
 }
 
@@ -88,7 +88,7 @@ func TestMockClient(t *testing.T) {
 		bindFail: map[string]bool{"bob": true},
 	}
 	ctx := context.Background()
-	users, err := m.SearchUsers(ctx)
+		users, err := m.SearchUsers(ctx, nil)
 	if err != nil {
 		t.Fatalf("SearchUsers: %v", err)
 	}

@@ -54,8 +54,8 @@ func (l *recordingLDAP) Authenticate(ctx context.Context, username, password str
 	return nil, errors.New("ldap should not be reached")
 }
 
-func (l *recordingLDAP) EnsureUserRow(ctx context.Context, r *LDAPAuthResult, defaultOrgID string) (string, string, string, error) {
-	return "", "", "", errors.New("ensure should not be reached")
+func (l *recordingLDAP) EnsureUserRow(ctx context.Context, r *LDAPAuthResult, defaultOrgID string) (string, string, string, string, error) {
+	return "", "", "", "", errors.New("ensure should not be reached")
 }
 
 // TestLogin_LocalAdminSucceeds_LDAPNotTriggered 本地 admin 登录成功且 LDAP 不被触发。
