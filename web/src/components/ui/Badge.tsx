@@ -1,34 +1,34 @@
 const statusMap: Record<string, { bg: string; color: string; label: string }> = {
-  available: { bg: 'rgba(39,166,68,0.1)', color: '#4ade80', label: '可用' },
-  assigned: { bg: 'rgba(94,106,210,0.1)', color: '#818cf8', label: '已领用' },
-  borrowed: { bg: 'rgba(168,85,247,0.1)', color: '#c084fc', label: '已出借' },
-  maintenance: { bg: 'rgba(245,158,11,0.1)', color: '#fbbf24', label: '维护中' },
-  retired: { bg: 'rgba(255,255,255,0.05)', color: '#8a8f98', label: '已退役' },
-  broken: { bg: 'rgba(239,68,68,0.1)', color: '#f87171', label: '已损坏' },
+  available: { bg: 'rgba(39,166,68,0.1)', color: '#16a34a', label: '可用' },
+  assigned: { bg: 'rgba(94,106,210,0.1)', color: '#4f46e5', label: '已领用' },
+  borrowed: { bg: 'rgba(168,85,247,0.1)', color: '#9333ea', label: '已出借' },
+  maintenance: { bg: 'rgba(245,158,11,0.1)', color: '#d97706', label: '维护中' },
+  retired: { bg: 'rgba(0,0,0,0.05)', color: '#6b6b6b', label: '已退役' },
+  broken: { bg: 'rgba(239,68,68,0.1)', color: '#dc2626', label: '已损坏' },
 }
 
 const assignmentMap: Record<string, { bg: string; color: string; label: string }> = {
-  permanent: { bg: 'rgba(94,106,210,0.1)', color: '#818cf8', label: '领用' },
-  temporary: { bg: 'rgba(168,85,247,0.1)', color: '#c084fc', label: '借用' },
+  permanent: { bg: 'rgba(94,106,210,0.1)', color: '#4f46e5', label: '领用' },
+  temporary: { bg: 'rgba(168,85,247,0.1)', color: '#9333ea', label: '借用' },
 }
 
 const maintenanceStatusMap: Record<string, { bg: string; color: string; label: string }> = {
-  open: { bg: 'rgba(59,130,246,0.1)', color: '#60a5fa', label: '待处理' },
-  in_progress: { bg: 'rgba(245,158,11,0.1)', color: '#fbbf24', label: '处理中' },
-  completed: { bg: 'rgba(39,166,68,0.1)', color: '#4ade80', label: '已完成' },
-  canceled: { bg: 'rgba(255,255,255,0.05)', color: '#8a8f98', label: '已取消' },
+  open: { bg: 'rgba(59,130,246,0.1)', color: '#2563eb', label: '待处理' },
+  in_progress: { bg: 'rgba(245,158,11,0.1)', color: '#d97706', label: '处理中' },
+  completed: { bg: 'rgba(39,166,68,0.1)', color: '#16a34a', label: '已完成' },
+  canceled: { bg: 'rgba(0,0,0,0.05)', color: '#6b6b6b', label: '已取消' },
 }
 
 const maintenanceCategoryMap: Record<string, { bg: string; color: string; label: string }> = {
-  repair: { bg: 'rgba(239,68,68,0.1)', color: '#f87171', label: '维修' },
-  upkeep: { bg: 'rgba(59,130,246,0.1)', color: '#60a5fa', label: '保养' },
+  repair: { bg: 'rgba(239,68,68,0.1)', color: '#dc2626', label: '维修' },
+  upkeep: { bg: 'rgba(59,130,246,0.1)', color: '#2563eb', label: '保养' },
 }
 
 const stocktakeStatusMap: Record<string, { bg: string; color: string; label: string }> = {
-  draft: { bg: 'rgba(255,255,255,0.05)', color: '#8a8f98', label: '草稿' },
-  in_progress: { bg: 'rgba(59,130,246,0.1)', color: '#60a5fa', label: '进行中' },
-  completed: { bg: 'rgba(39,166,68,0.1)', color: '#4ade80', label: '已完成' },
-  canceled: { bg: 'rgba(239,68,68,0.1)', color: '#f87171', label: '已取消' },
+  draft: { bg: 'rgba(0,0,0,0.05)', color: '#6b6b6b', label: '草稿' },
+  in_progress: { bg: 'rgba(59,130,246,0.1)', color: '#2563eb', label: '进行中' },
+  completed: { bg: 'rgba(39,166,68,0.1)', color: '#16a34a', label: '已完成' },
+  canceled: { bg: 'rgba(239,68,68,0.1)', color: '#dc2626', label: '已取消' },
 }
 
 interface BadgeProps {
@@ -44,7 +44,7 @@ interface BadgeProps {
 export default function Badge({ status, type = 'status' }: BadgeProps) {
   if (type === 'assignment') {
     const a = assignmentMap[status || ''] || {
-      bg: 'rgba(255,255,255,0.05)',
+      bg: 'rgba(0,0,0,0.05)',
       color: 'var(--text-tertiary)',
       label: status || '—',
     }
@@ -65,7 +65,7 @@ export default function Badge({ status, type = 'status' }: BadgeProps) {
 
   if (type === 'maintenance_status') {
     const s = maintenanceStatusMap[status || ''] || {
-      bg: 'rgba(255,255,255,0.05)',
+      bg: 'rgba(0,0,0,0.05)',
       color: 'var(--text-tertiary)',
       label: status || '—',
     }
@@ -86,7 +86,7 @@ export default function Badge({ status, type = 'status' }: BadgeProps) {
 
   if (type === 'maintenance_category') {
     const c = maintenanceCategoryMap[status || ''] || {
-      bg: 'rgba(255,255,255,0.05)',
+      bg: 'rgba(0,0,0,0.05)',
       color: 'var(--text-tertiary)',
       label: status || '—',
     }
@@ -110,7 +110,7 @@ export default function Badge({ status, type = 'status' }: BadgeProps) {
 
   if (type === 'stocktake_status') {
     const s = stocktakeStatusMap[status || ''] || {
-      bg: 'rgba(255,255,255,0.05)',
+      bg: 'rgba(0,0,0,0.05)',
       color: 'var(--text-tertiary)',
       label: status || '—',
     }
@@ -130,7 +130,7 @@ export default function Badge({ status, type = 'status' }: BadgeProps) {
   }
 
   const s = statusMap[status || ''] || {
-    bg: 'rgba(255,255,255,0.05)',
+    bg: 'rgba(0,0,0,0.05)',
     color: 'var(--text-tertiary)',
     label: status || '—',
   }

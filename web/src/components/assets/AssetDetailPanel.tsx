@@ -269,7 +269,7 @@ export default function AssetDetailPanel({
             borderRadius: 6,
             background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.2)',
-            color: '#f87171',
+            color: '#dc2626',
             fontSize: 12,
           }}
         >
@@ -466,7 +466,7 @@ export default function AssetDetailPanel({
                   cursor: transitionMutation.isPending
                     ? 'default'
                     : 'pointer',
-                  background: 'rgba(255,255,255,0.03)',
+                  background: 'rgba(0,0,0,0.03)',
                   border: '1px solid var(--border-default)',
                   color: 'var(--text-secondary)',
                   fontSize: 13,
@@ -607,7 +607,7 @@ export default function AssetDetailPanel({
                 padding: '7px 10px',
                 borderRadius: 5,
                 border: '1px solid var(--border-default)',
-                background: 'rgba(255,255,255,0.02)',
+                background: 'rgba(0,0,0,0.02)',
                 color: 'var(--text-primary)',
                 fontSize: 13,
                 outline: 'none',

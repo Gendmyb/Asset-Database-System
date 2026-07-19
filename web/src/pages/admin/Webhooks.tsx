@@ -271,7 +271,7 @@ export default function Webhooks() {
           </Button>
           <Button
             variant="ghost"
-            style={{ fontSize: 12, padding: '4px 8px', color: '#f87171' }}
+            style={{ fontSize: 12, padding: '4px 8px', color: '#dc2626' }}
             onClick={(e) => {
               e.stopPropagation()
               setDeleteTarget(row)
@@ -455,7 +455,7 @@ function DeliveriesModal({
           marginBottom: 12,
           padding: '8px 10px',
           borderRadius: 5,
-          background: 'rgba(255,255,255,0.02)',
+          background: 'rgba(0,0,0,0.02)',
           border: '1px solid var(--border-subtle)',
         }}
       >
@@ -507,7 +507,7 @@ function DeliveriesModal({
               </span>
               {d.last_error && (
                 <span
-                  style={{ color: '#f87171', marginLeft: 'auto', wordBreak: 'break-all' }}
+                  style={{ color: '#dc2626', marginLeft: 'auto', wordBreak: 'break-all' }}
                   title={d.last_error}
                 >
                   {d.last_error}

@@ -36,7 +36,7 @@ const columns: Column<Asset>[] = [
         style={{
           fontFamily: 'JetBrains Mono, monospace',
           fontSize: 12,
-          background: 'rgba(255,255,255,0.05)',
+          background: 'rgba(0,0,0,0.05)',
           color: 'var(--text-secondary)',
           padding: '2px 8px',
           borderRadius: 4,

@@ -12,7 +12,7 @@ const FIELD_STYLE: React.CSSProperties = {
   padding: '7px 10px',
   borderRadius: 5,
   border: '1px solid var(--border-default)',
-  background: 'rgba(255,255,255,0.06)',
+  background: 'rgba(0,0,0,0.06)',
   color: 'var(--text-primary)',
   fontSize: 13,
   outline: 'none',
@@ -22,7 +22,7 @@ const FIELD_STYLE: React.CSSProperties = {
 const SELECT_STYLE: React.CSSProperties = {
   ...FIELD_STYLE,
   cursor: 'pointer',
-  background: 'rgba(255,255,255,0.06)',
+  background: 'rgba(0,0,0,0.06)',
 }
 
 const SECTION_TITLE: React.CSSProperties = {

@@ -125,7 +125,7 @@ export default function ReportsPage() {
           <KpiCard label="总资产数" value={s ? String(s.total_assets) : '—'} color="var(--brand)" />
           <KpiCard label="总原值" value={s ? formatCurrency(s.total_purchase_price) : '—'} color="#7170ff" />
           <KpiCard label="累计折旧" value={s ? formatCurrency(s.total_depreciation) : '—'} color="var(--warning)" />
-          <KpiCard label="净值" value={s ? formatCurrency(s.net_book_value) : '—'} color="#4ade80" />
+          <KpiCard label="净值" value={s ? formatCurrency(s.net_book_value) : '—'} color="#16a34a" />
         </div>
       )}
 

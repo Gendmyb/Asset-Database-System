@@ -249,7 +249,7 @@ export default function StocktakeDetail() {
             padding: '4px 8px',
             borderRadius: 5,
             border: '1px solid var(--border-default)',
-            background: 'rgba(255,255,255,0.02)',
+            background: 'rgba(0,0,0,0.02)',
             color: 'var(--text-primary)',
             fontSize: 12,
             fontFamily: 'inherit',
@@ -284,7 +284,7 @@ export default function StocktakeDetail() {
                 padding: '4px 8px',
                 borderRadius: 5,
                 border: '1px solid var(--border-default)',
-                background: 'rgba(255,255,255,0.02)',
+                background: 'rgba(0,0,0,0.02)',
                 color: 'var(--text-tertiary)',
                 fontSize: 12,
                 fontFamily: 'inherit',
@@ -304,7 +304,7 @@ export default function StocktakeDetail() {
               padding: '4px 8px',
               borderRadius: 5,
               border: '1px solid var(--border-default)',
-              background: 'rgba(255,255,255,0.02)',
+              background: 'rgba(0,0,0,0.02)',
               color: 'var(--text-primary)',
               fontSize: 12,
               fontFamily: 'inherit',
@@ -374,7 +374,7 @@ export default function StocktakeDetail() {
             borderRadius: 8,
             background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.2)',
-            color: '#f87171',
+            color: '#dc2626',
             fontSize: 13,
           }}
         >
@@ -487,7 +487,7 @@ export default function StocktakeDetail() {
             style={{
               height: 8,
               borderRadius: 4,
-              background: 'rgba(255,255,255,0.05)',
+              background: 'rgba(0,0,0,0.05)',
               overflow: 'hidden',
               display: 'flex',
             }}
@@ -497,7 +497,7 @@ export default function StocktakeDetail() {
                 <div
                   style={{
                     height: '100%',
-                    background: '#4ade80',
+                    background: '#16a34a',
                     width: `${(summary.found / summary.total) * 100}%`,
                     transition: 'width .3s',
                   }}
@@ -505,7 +505,7 @@ export default function StocktakeDetail() {
                 <div
                   style={{
                     height: '100%',
-                    background: '#f87171',
+                    background: '#dc2626',
                     width: `${(summary.missing / summary.total) * 100}%`,
                     transition: 'width .3s',
                   }}
@@ -537,7 +537,7 @@ export default function StocktakeDetail() {
                   width: 8,
                   height: 8,
                   borderRadius: 2,
-                  background: '#4ade80',
+                  background: '#16a34a',
                   marginRight: 4,
                   verticalAlign: 'middle',
                 }}
@@ -551,7 +551,7 @@ export default function StocktakeDetail() {
                   width: 8,
                   height: 8,
                   borderRadius: 2,
-                  background: '#f87171',
+                  background: '#dc2626',
                   marginRight: 4,
                   verticalAlign: 'middle',
                 }}
@@ -579,7 +579,7 @@ export default function StocktakeDetail() {
                   width: 8,
                   height: 8,
                   borderRadius: 2,
-                  background: 'rgba(255,255,255,0.1)',
+                  background: 'rgba(0,0,0,0.1)',
                   marginRight: 4,
                   verticalAlign: 'middle',
                 }}
@@ -618,7 +618,7 @@ export default function StocktakeDetail() {
               padding: '6px 10px',
               borderRadius: 5,
               border: '1px solid var(--border-default)',
-              background: 'rgba(255,255,255,0.02)',
+              background: 'rgba(0,0,0,0.02)',
               color: 'var(--text-primary)',
               fontSize: 13,
               fontFamily: 'inherit',
@@ -652,7 +652,7 @@ export default function StocktakeDetail() {
               padding: '6px 10px',
               borderRadius: 5,
               border: '1px solid var(--border-default)',
-              background: 'rgba(255,255,255,0.02)',
+              background: 'rgba(0,0,0,0.02)',
               color: 'var(--text-primary)',
               fontSize: 13,
               fontFamily: 'inherit',
@@ -677,7 +677,7 @@ export default function StocktakeDetail() {
             borderRadius: 8,
             background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.2)',
-            color: '#f87171',
+            color: '#dc2626',
             fontSize: 13,
             marginBottom: 16,
           }}
@@ -771,7 +771,7 @@ export default function StocktakeDetail() {
                 padding: '7px 10px',
                 borderRadius: 5,
                 border: `1px solid ${surplusErrors.surplus_note ? 'var(--danger)' : 'var(--border-default)'}`,
-                background: 'rgba(255,255,255,0.02)',
+                background: 'rgba(0,0,0,0.02)',
                 color: 'var(--text-primary)',
                 fontSize: 13,
                 fontFamily: 'inherit',

@@ -101,13 +101,13 @@ export default function Layout() {
                   fontSize: 13,
                   fontWeight: active ? 510 : 400,
                   color: active ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                  background: active ? 'rgba(255,255,255,0.04)' : 'transparent',
+                  background: active ? 'rgba(0,0,0,0.04)' : 'transparent',
                   transition: 'all .1s',
                   opacity: item.demoOnly && !demoMode ? 0.4 : 1,
                 }}
                 onMouseEnter={(e) => {
                   if (!active) {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.02)'
+                    e.currentTarget.style.background = 'rgba(0,0,0,0.02)'
                     e.currentTarget.style.color = 'var(--text-secondary)'
                   }
                 }}

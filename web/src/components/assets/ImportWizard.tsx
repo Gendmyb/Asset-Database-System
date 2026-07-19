@@ -13,7 +13,7 @@ const FIELD_STYLE: React.CSSProperties = {
   padding: '7px 10px',
   borderRadius: 5,
   border: '1px solid var(--border-default)',
-  background: 'rgba(255,255,255,0.02)',
+  background: 'rgba(0,0,0,0.02)',
   color: 'var(--text-primary)',
   fontSize: 13,
   outline: 'none',
@@ -173,7 +173,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               style={{
                 padding: '8px 12px',
                 borderRadius: 6,
-                background: 'rgba(255,255,255,0.03)',
+                background: 'rgba(0,0,0,0.03)',
                 border: '1px solid var(--border-subtle)',
                 fontSize: 13,
                 color: 'var(--text-secondary)',
@@ -209,11 +209,11 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
               预览结果：共{' '}
               <strong style={{ color: 'var(--text-primary)' }}>{preview.total_count}</strong>{' '}
               条，其中{' '}
-              <strong style={{ color: '#4ade80' }}>{preview.valid_count}</strong>{' '}
+              <strong style={{ color: '#16a34a' }}>{preview.valid_count}</strong>{' '}
               条有效
               {preview.errors.length > 0 && (
                 <>
-                  ，<strong style={{ color: '#f87171' }}>{preview.errors.length}</strong> 条错误
+                  ，<strong style={{ color: '#dc2626' }}>{preview.errors.length}</strong> 条错误
                 </>
               )}
               。
@@ -232,7 +232,7 @@ export default function ImportWizard({ open, onClose }: ImportWizardProps) {
             </div>
           )}
           {preview.valid_count === 0 && (
-            <p style={{ fontSize: 13, color: '#f87171', marginBottom: 16 }}>
+            <p style={{ fontSize: 13, color: '#dc2626', marginBottom: 16 }}>
               没有有效数据可以导入，请检查文件后重试。
             </p>
           )}

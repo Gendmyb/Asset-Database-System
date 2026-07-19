@@ -232,7 +232,7 @@ export default function StocktakesPage() {
             borderRadius: 8,
             background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.2)',
-            color: '#f87171',
+            color: '#dc2626',
             fontSize: 13,
             marginBottom: 16,
           }}

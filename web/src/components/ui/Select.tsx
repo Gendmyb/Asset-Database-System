@@ -34,7 +34,7 @@ export default function Select({ label, error, options, style, ...rest }: Select
           padding: '7px 10px',
           borderRadius: 5,
           border: `1px solid ${error ? 'var(--danger)' : 'var(--border-default)'}`,
-          background: 'rgba(255,255,255,0.02)',
+          background: 'rgba(0,0,0,0.02)',
           color: 'var(--text-primary)',
           fontSize: 13,
           outline: 'none',

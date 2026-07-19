@@ -1,33 +1,33 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* 全局样式 — 亮色主题 (Linear 风格)
+   注意: 必须在 main.tsx 中 import 才会生效。组件全部使用内联样式 + CSS 变量,
+   不使用 Tailwind utility class, 因此不引入 @tailwind 指令 (避免 preflight 重置)。 */
 
 :root {
-  --bg-base: #08090a;
-  --bg-panel: #0f1011;
-  --bg-surface: #191a1b;
-  --bg-hover: #242528;
-  --text-primary: #f7f8f8;
-  --text-secondary: #d0d6e0;
-  --text-tertiary: #8a8f98;
-  --text-quaternary: #62666d;
+  --bg-base: #fbfbfa;
+  --bg-panel: #ffffff;
+  --bg-surface: #f4f4f2;
+  --bg-hover: #ededeb;
+  --text-primary: #1a1a1a;
+  --text-secondary: #4a4a4a;
+  --text-tertiary: #6b6b6b;
+  --text-quaternary: #9a9a9a;
   --brand: #5e6ad2;
-  --brand-hover: #828fff;
-  --border-default: rgba(255,255,255,0.08);
-  --border-subtle: rgba(255,255,255,0.05);
-  --success: #27a644;
-  --warning: #f59e0b;
-  --danger: #ef4444;
+  --brand-hover: #4f5ac0;
+  --border-default: rgba(0,0,0,0.08);
+  --border-subtle: rgba(0,0,0,0.05);
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
 }
 
-/* 覆盖 Tailwind reset — 确保暗色主题文字可见 */
+/* 覆盖 Tailwind reset — 亮色主题基础 */
 html, body, #root {
   margin: 0;
   padding: 0;
   min-height: 100vh;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  background: #08090a;
-  color: #f7f8f8;
+  background: #fbfbfa;
+  color: #1a1a1a;
   -webkit-font-smoothing: antialiased;
   font-feature-settings: 'cv01', 'ss03';
 }
@@ -36,7 +36,7 @@ html, body, #root {
   box-sizing: border-box;
 }
 
-/* 确保所有元素继承暗色文字 */
+/* 确保所有元素继承字体 */
 input, select, button, textarea, a, table, th, td, div, span, p, h1, h2, h3, h4, h5, h6, label {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   font-feature-settings: 'cv01', 'ss03';
@@ -44,12 +44,13 @@ input, select, button, textarea, a, table, th, td, div, span, p, h1, h2, h3, h4,
 
 /* 覆盖 Tailwind 默认边框色 */
 *, ::before, ::after {
-  border-color: rgba(255,255,255,0.08);
+  border-color: rgba(0,0,0,0.08);
 }
 
-::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.25); }
 
 /* 确保 placeholder 可见 */
-::placeholder { color: #62666d !important; opacity: 1 !important; }
+::placeholder { color: #9a9a9a !important; opacity: 1 !important; }

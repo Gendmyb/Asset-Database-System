@@ -176,7 +176,7 @@ export default function Dashboard() {
             {s?.by_lifecycle ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: 8 }}>
                 {Object.entries(s.by_lifecycle as Record<string, number>).map(([k, v]) => (
-                  <div key={k} style={{ background: 'rgba(255,255,255,0.02)', borderRadius: 8, padding: 14, border: '1px solid var(--border-subtle)' }}>
+                  <div key={k} style={{ background: 'rgba(0,0,0,0.02)', borderRadius: 8, padding: 14, border: '1px solid var(--border-subtle)' }}>
                     <div style={{ fontSize: 24, fontWeight: 600, color: 'var(--text-primary)' }}>{v}</div>
                     <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>{LIFECYCLE_LABELS[k] || k}</div>
                   </div>

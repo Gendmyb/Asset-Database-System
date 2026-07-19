@@ -127,7 +127,7 @@ export default function MaintenancePage() {
           style={{
             fontFamily: 'JetBrains Mono, monospace',
             fontSize: 12,
-            background: 'rgba(255,255,255,0.05)',
+            background: 'rgba(0,0,0,0.05)',
             padding: '2px 8px',
             borderRadius: 4,
             color: 'var(--text-secondary)',
@@ -208,7 +208,7 @@ export default function MaintenancePage() {
                 </Button>
                 <Button
                   variant="ghost"
-                  style={{ fontSize: 12, padding: '4px 10px', color: '#f87171' }}
+                  style={{ fontSize: 12, padding: '4px 10px', color: '#dc2626' }}
                   onClick={(e) => {
                     e.stopPropagation()
                     setCancelingTicket(row)
@@ -286,7 +286,7 @@ export default function MaintenancePage() {
             borderRadius: 8,
             background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.2)',
-            color: '#f87171',
+            color: '#dc2626',
             fontSize: 13,
             marginBottom: 16,
           }}
@@ -325,7 +325,7 @@ export default function MaintenancePage() {
                 padding: '7px 10px',
                 borderRadius: 5,
                 border: '1px solid var(--border-default)',
-                background: 'rgba(255,255,255,0.02)',
+                background: 'rgba(0,0,0,0.02)',
                 color: 'var(--text-primary)',
                 fontSize: 13,
                 outline: 'none',
@@ -364,7 +364,7 @@ export default function MaintenancePage() {
                 padding: '7px 10px',
                 borderRadius: 5,
                 border: '1px solid var(--border-default)',
-                background: 'rgba(255,255,255,0.02)',
+                background: 'rgba(0,0,0,0.02)',
                 color: 'var(--text-primary)',
                 fontSize: 13,
                 outline: 'none',
@@ -413,7 +413,7 @@ export default function MaintenancePage() {
                 padding: '7px 10px',
                 borderRadius: 5,
                 border: '1px solid var(--border-default)',
-                background: 'rgba(255,255,255,0.02)',
+                background: 'rgba(0,0,0,0.02)',
                 color: 'var(--text-primary)',
                 fontSize: 13,
                 outline: 'none',

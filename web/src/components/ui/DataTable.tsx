@@ -77,7 +77,7 @@ export default function DataTable<T>({
                 transition: 'background .1s',
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.02)'
+                e.currentTarget.style.background = 'rgba(0,0,0,0.02)'
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = 'transparent'

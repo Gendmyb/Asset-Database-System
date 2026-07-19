@@ -130,7 +130,7 @@ export default function AssignmentsPage() {
           <span
             style={{
               fontSize: 13,
-              color: overdue ? '#f87171' : 'var(--text-secondary)',
+              color: overdue ? '#dc2626' : 'var(--text-secondary)',
               fontWeight: overdue ? 600 : 400,
             }}
           >
@@ -152,13 +152,13 @@ export default function AssignmentsPage() {
         }
         if (isOverdue(row)) {
           return (
-            <span style={{ fontSize: 12, color: '#f87171', fontWeight: 600 }}>
+            <span style={{ fontSize: 12, color: '#dc2626', fontWeight: 600 }}>
               已逾期
             </span>
           )
         }
         return (
-          <span style={{ fontSize: 12, color: '#4ade80' }}>
+          <span style={{ fontSize: 12, color: '#16a34a' }}>
             进行中
           </span>
         )
@@ -221,7 +221,7 @@ export default function AssignmentsPage() {
               background:
                 tab === t.key
                   ? 'var(--brand)'
-                  : 'rgba(255,255,255,0.03)',
+                  : 'rgba(0,0,0,0.03)',
               color:
                 tab === t.key
                   ? '#fff'
@@ -245,7 +245,7 @@ export default function AssignmentsPage() {
             borderRadius: 8,
             background: 'rgba(239,68,68,0.1)',
             border: '1px solid rgba(239,68,68,0.2)',
-            color: '#f87171',
+            color: '#dc2626',
             fontSize: 13,
             marginBottom: 16,
           }}

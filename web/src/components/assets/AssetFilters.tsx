@@ -56,7 +56,7 @@ export default function AssetFilters({
           placeholder="搜索名称、标签、制造商..."
           style={{
             paddingLeft: 34,
-            background: 'rgba(255,255,255,0.02)',
+            background: 'rgba(0,0,0,0.02)',
             position: 'relative',
           }}
         />
@@ -87,7 +87,7 @@ export default function AssetFilters({
           padding: '7px 10px',
           borderRadius: 6,
           border: '1px solid var(--border-default)',
-          background: `rgba(255,255,255,${status ? '0.04' : '0.02'})`,
+          background: `rgba(0,0,0,${status ? '0.04' : '0.02'})`,
           color: status ? 'var(--text-primary)' : 'var(--text-tertiary)',
           fontSize: 13,
           fontFamily: 'inherit',
@@ -104,7 +104,7 @@ export default function AssetFilters({
           padding: '7px 10px',
           borderRadius: 6,
           border: '1px solid var(--border-default)',
-          background: `rgba(255,255,255,${lifecycle ? '0.04' : '0.02'})`,
+          background: `rgba(0,0,0,${lifecycle ? '0.04' : '0.02'})`,
           color: lifecycle ? 'var(--text-primary)' : 'var(--text-tertiary)',
           fontSize: 13,
           fontFamily: 'inherit',
@@ -121,7 +121,7 @@ export default function AssetFilters({
           padding: '7px 10px',
           borderRadius: 6,
           border: '1px solid var(--border-default)',
-          background: `rgba(255,255,255,${manufacturer ? '0.04' : '0.02'})`,
+          background: `rgba(0,0,0,${manufacturer ? '0.04' : '0.02'})`,
           color: manufacturer ? 'var(--text-primary)' : 'var(--text-tertiary)',
           fontSize: 13,
           fontFamily: 'inherit',
