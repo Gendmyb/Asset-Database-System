@@ -15,7 +15,7 @@ CMD_DIR := cmd/api-server
 build:
 	cd assetserver && go build -o $(BINARY) ./$(CMD_DIR)
 
-# 开发运行 (使用 SQLite 内存模式)
+# 开发运行 (连接本机 PostgreSQL, 通过 DB_* 环境变量配置; DEMO=true 走内存模式)
 run: build
 	cd assetserver && ./$(BINARY)
 
@@ -27,10 +27,12 @@ dev:
 test:
 	cd assetserver && go test ./...
 
-# 数据库迁移 (占位; 实际运行需指定 DATABASE_URL)
+# 数据库迁移: 启动时自动执行 (自研 runner, EXCLUSIVE 锁防多实例并发);
+# 如需手动预跑, 用 DB_* 单项变量连接 (DATABASE_URL 不被识别)
 migrate:
-	@echo "Run manually: psql \$$DATABASE_URL -f assetserver/migrations/001_init.sql"
-	@echo "                 psql \$$DATABASE_URL -f assetserver/migrations/002_settings_sequences.sql"
+	@echo "Migrations run automatically on server startup."
+	@echo "Manual (optional): export DB_HOST/DB_PORT/DB_NAME/DB_USER/DATABASE_PASSWORD,"
+	@echo "  then run psql -f assetserver/migrations/NNN_*.sql in filename order."
 
 # 清理
 clean:

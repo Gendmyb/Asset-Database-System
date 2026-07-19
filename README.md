@@ -19,6 +19,16 @@
 | 认证 | JWT Ed25519（15min）+ Refresh Token 轮换 + 复用检测（全族吊销） |
 | 权限 | 4 角色 RBAC：viewer/manager/admin/super_admin，org 级 IDOR 防护 |
 | 审计 | 不可变审计链（SHA-256 链式哈希），所有写操作自动记录 |
+| **企业化（Wave 1+2，默认关闭）** | |
+| AD/LDAP (G1) | 本地优先登录 + LDAP bind 兜底 + 定时/手动账号同步，admin 永不被覆盖 |
+| 用户导入 (G2) | CSV 批量导入用户（dry-run 预检 + 模板下载） |
+| 扫码盘点 (G3) | 资产二维码 PNG + 移动端响应式盘点扫码录入 |
+| 到期提醒 (G4) | 定时扫描保修到期 / 领用逾期并发布事件，可触发 LDAP 同步 |
+| Excel 导出 (G5) | 资产清单 `.xlsx`；盘点 / 折旧报表支持 `?format=xlsx` |
+| 通知渠道 (G6) | SMTP 邮件 + 钉钉 + 企微 + 飞书，机器人 webhook 强制 HTTPS + SSRF 防护 |
+| 审批流 (G7) | 领用 / 报废 / 维修可配置审批门（系统设置开关，默认关闭向后兼容） |
+| 资产关系 (G8) | 外设挂载（parent/children 树），防循环 + 跨 org 禁止 |
+| 部门行级权限 (G9) | `DATA_SCOPE_DEPARTMENT` 开启后 manager 仅见本部门及子孙（ltree 子树） |
 
 ## 快速开始
 
@@ -42,7 +52,20 @@ cd assetserver && DEMO=true go run ./cmd/api-server
 # 浏览器打开 http://localhost:8080
 ```
 
-> 完整部署流程（三种方式、环境变量、反向代理 HTTPS、备份恢复、升级与排障）见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
+**环境变量示例**（生产请用强密码；数据库连接使用 `DB_*` 单项变量，`DATABASE_URL` 不被识别）：
+```bash
+export DB_HOST=localhost DB_PORT=5432 DB_NAME=assetdb DB_USER=app_user
+export DATABASE_PASSWORD='强密码'
+export DB_SSLMODE=require                 # 可选，生产建议 require
+export JWT_ED25519_SEED=$(openssl rand -hex 32)
+# 企业化（可选，默认关闭）
+export LDAP_HOST=ldap.corp.local LDAP_BASE_DN=OU=Staff,DC=corp,DC=local LDAP_BIND_DN=CN=svc-ldap,DC=corp,DC=local LDAP_BIND_PASSWORD='***'
+export NOTIFY_ENABLE=true SMTP_HOST=smtp.corp.local SMTP_FROM=assets@corp.local SMTP_USER=assets SMTP_PASSWORD='***'
+export SCHEDULER_INTERVAL=1h SCHEDULER_WARRANTY_DAYS=30
+export EXTERNAL_URL=https://assets.example.com
+```
+
+> 完整部署流程（三种方式、环境变量、反向代理 HTTPS、备份恢复、升级与排障、企业化功能配置）见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
 
 ## 技术栈
 
@@ -86,4 +109,7 @@ cd assetserver && DEMO=true go run ./cmd/api-server
 ## 项目状态
 
 v0.2.0 — 核心业务闭环完成；此后持续迭代（亮色主题、用户软删除、报废门控、移除采购中状态、领用列表显示名称、SPA 路由 404 修复等，详见 [docs/CHANGELOG.md](docs/CHANGELOG.md)）。
-实施规划见 [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)。
+
+**企业化适配 Wave 1+2**（未发布，供上线测试）：G1 AD/LDAP 同步+SSO、G2 用户批量导入、G3 扫码+移动盘点、G4 到期提醒、G5 Excel 导出、G6 通知渠道、G7 审批流、G8 资产关系/外设挂载、G9 部门级行级权限已交付，默认全部关闭，向后兼容 v0.2.0。Wave 3（G11 PDF 报表 / G12 PWA）待启动，G10 合同管理已跳过。
+
+实施规划见 [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md)，进度跟踪见 [docs/PROGRESS.md](docs/PROGRESS.md)。

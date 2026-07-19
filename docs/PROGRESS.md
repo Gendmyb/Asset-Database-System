@@ -20,6 +20,8 @@
 | H | 折旧、报表、导入导出 | ✅ | 2026-07-19 |
 | I | Webhook 接线、文档校准、CI 完整化 | ✅ | 2026-07-19 |
 | J | 终验双门禁（PM 代理 + 逻辑审计代理） | ✅ | 2026-07-19 |
+| K | 部署后修复（setup 脚本/SPA 回退/登录闪烁等） | ✅ | 2026-07-19 |
+| L | 企业化适配 Wave 1+2（G1–G9 缺口补齐） | ✅ | 2026-07-19 |
 
 ## 明细
 
@@ -113,3 +115,29 @@
 | 前端: 资产新建窗口溢出 → 可滚动 | ✅ | Modal max-height:90vh + overflow-y:auto | 2026-07-19 |
 | 构建: 前端 tsc+vite + 后端 go build 验证 | ✅ | 756 modules + 27MB 静态二进制 | 2026-07-19 |
 | Git: 全部修改提交推送 GitHub | ✅ | 主分支，含 deploy script | 2026-07-19 |
+
+## 企业化适配 Wave 1+2 (L)
+
+> 缺口 G1–G9 全部交付，双门禁（PM 代理 + 逻辑审计代理）通过。所有新功能默认关闭，向后兼容 v0.2.0。
+> 提交：`967324f`（Wave 1）、`a600eca`（Wave 2），分支 `feat/enterprise-adaptation`。
+
+| 任务 | 状态 | 提交 hash | 验证方式与结果 | 时间 |
+|---|---|---|---|---|
+| G1 AD/LDAP 同步+SSO：`internal/auth/ldap/`，登录本地优先+LDAP bind 兜底，admin 永不被覆盖；env `LDAP_*`（Host/BaseDN/BindDN 齐全才启用）；`POST /admin/ldap/sync` | ✅ | 967324f | go build/test 通过，双门禁通过 | 2026-07-19 |
+| G2 用户批量导入：`POST /admin/users/import?dry_run=true`、`GET /admin/users/import/template`；CSV: username,display_name,email,role,org_path,password | ✅ | 967324f | 双门禁通过 | 2026-07-19 |
+| G3 扫码+移动盘点：`GET /assets/:id/qrcode`（PNG），`?content=url` 模式基于 `EXTERNAL_URL`；前端扫码录入+响应式 | ✅ | 967324f | 双门禁通过 | 2026-07-19 |
+| G4 到期提醒：`internal/scheduler/`，env `SCHEDULER_INTERVAL`(默认 off)/`SCHEDULER_WARRANTY_DAYS`(30)/`SCHEDULER_LDAP_SYNC`；扫保修到期/领用逾期发事件+定时 LDAP 同步 | ✅ | 967324f | 双门禁通过 | 2026-07-19 |
+| G5 Excel 导出：`GET /reports/assets.xlsx`；盘点/折旧报表支持 `?format=xlsx` | ✅ | 967324f | 双门禁通过 | 2026-07-19 |
+| G6 通知渠道：`internal/notify/`，SMTP+钉钉+企微+飞书；env `NOTIFY_ENABLE`/`SMTP_*`/`NOTIFY_*_WEBHOOK`；API `/admin/notify/rules`、`/admin/notify/deliveries`；机器人 webhook 强制 HTTPS+SSRF 防护 | ✅ | a600eca | 双门禁通过 | 2026-07-19 |
+| G7 审批流：系统设置 `approval.{assignment,retirement,maintenance}.enabled`（默认关闭）；API `/admin/approvals`、`/admin/approvals/:id/approve|reject` | ✅ | a600eca | 双门禁通过 | 2026-07-19 |
+| G8 资产关系/外设挂载：`POST /assets/:id/mount`、`POST /assets/:id/unmount`（manager+）；详情返回 parent+children 树；防循环+跨 org 禁止 | ✅ | a600eca | 双门禁通过 | 2026-07-19 |
+| G9 部门级行级权限：env `DATA_SCOPE_DEPARTMENT`(默认 off)；on 时 super_admin 全局、manager 仅本部门及子孙（ltree 子树）；off 同 v0.2.0 | ✅ | a600eca | 双门禁通过 | 2026-07-19 |
+| 迁移 011_ldap_and_user_import / 012_notify_and_approvals / 013_asset_parent_and_data_scope | ✅ | 967324f / a600eca | 启动自动执行，EXCLUSIVE 锁防多实例并发 | 2026-07-19 |
+| 文档同步：CHANGELOG/DEPLOYMENT/README/PROGRESS 更新企业化适配章节 | ✅ | （待 PM 提交） | 本次文档增量更新 | 2026-07-19 |
+
+### Wave 3 待启动 / 已知遗留
+
+- **G10 合同管理**：经评估跳过（不在本轮范围）。
+- **G11 PDF 报表导出**：待启动，当前仅有 Excel/CSV 导出。
+- **G12 PWA（离线+移动端安装）**：待启动，当前仅有响应式移动端盘点。
+- **已知遗留**：企业化功能默认关闭，上线测试时需按 `docs/DEPLOYMENT.md` §6x 逐项开启 env 与系统设置开关；多实例部署时调度器（G4）建议仅单实例开启 `SCHEDULER_INTERVAL` 避免重复扫描。

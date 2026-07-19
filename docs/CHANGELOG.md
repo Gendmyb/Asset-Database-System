@@ -2,6 +2,21 @@
 
 ## 未发布 (2026-07-19 之后)
 
+### 企业化适配（Wave 1+2）
+
+> 缺口 G1–G9 全部交付，双门禁通过；提交 `967324f`（Wave 1）、`a600eca`（Wave 2）。所有新功能默认关闭，向后兼容 v0.2.0 行为。
+
+- **G1 AD/LDAP 同步 + SSO**（`internal/auth/ldap/`）：登录本地优先，本地未命中走 LDAP bind 兜底；admin 账号永不被 LDAP 覆盖。配置 env：`LDAP_HOST`/`LDAP_PORT`/`LDAP_USE_TLS`(starttls)/`LDAP_USE_SSL`(ldaps)/`LDAP_BIND_DN`/`LDAP_BIND_PASSWORD`/`LDAP_BASE_DN`/`LDAP_USER_FILTER`(默认 `(&(objectClass=user)(sAMAccountName=%s))`)；`LDAP_HOST`+`LDAP_BASE_DN`+`LDAP_BIND_DN` 三者齐全才自动启用，否则纯本地模式。`LDAP_SYNC_DISABLE_ONLY` 控制仅禁用而不创建账号。API：`POST /admin/ldap/sync`（admin+）。
+- **G2 用户批量导入**：`POST /admin/users/import?dry_run=true`（dry-run 预检）、`GET /admin/users/import/template`（CSV 模板下载）。CSV 列：`username,display_name,email,role,org_path,password`。
+- **G3 扫码 + 移动盘点**：`GET /assets/:id/qrcode`（PNG 二维码，默认内容为 `asset_tag`；`?content=url` 模式基于受信 `EXTERNAL_URL` 拼详情页 URL，未配置则回退 400）。前端盘点页支持扫码录入与响应式布局。
+- **G4 到期提醒**（`internal/scheduler/`）：env `SCHEDULER_INTERVAL`（默认 `off` 不启动；支持 `30m`/`1h` 等duration 或纯数字秒）、`SCHEDULER_WARRANTY_DAYS`(默认 30)、`SCHEDULER_LDAP_SYNC`(bool，定时触发 LDAP 同步)。扫描保修到期 / 领用逾期并发布事件。
+- **G5 Excel 导出**：`GET /reports/assets.xlsx`；盘点报告、折旧报表支持 `?format=xlsx` 切换 Excel 输出。
+- **G6 通知渠道**（`internal/notify/`）：SMTP 邮件 + 钉钉 + 企微 + 飞书机器人。env：`NOTIFY_ENABLE`、`SMTP_HOST`/`SMTP_PORT`(默认 587)/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM`、`NOTIFY_DINGTALK_WEBHOOK`/`NOTIFY_WECOM_WEBHOOK`/`NOTIFY_FEISHU_WEBHOOK`。API：`/admin/notify/rules`、`/admin/notify/deliveries`。机器人 webhook 强制 HTTPS + SSRF 防护。
+- **G7 审批流**：领用 / 报废 / 维修可配置审批门，系统设置 `approval.assignment.enabled` / `approval.retirement.enabled` / `approval.maintenance.enabled`（默认全部关闭，向后兼容）。API：`/admin/approvals`、`/admin/approvals/:id/approve|reject`。
+- **G8 资产关系 / 外设挂载**：`POST /assets/:id/mount`、`POST /assets/:id/unmount`（manager+），资产详情返回 parent + children 外设树。防循环 + 跨 org 禁止。
+- **G9 部门级行级权限**：env `DATA_SCOPE_DEPARTMENT`(默认 off)。开启后 super_admin 全局可见、manager 仅见本部门及子孙（ltree 子树）；关闭时行为同 v0.2.0（org 级）。
+- **迁移**：011(ldap + user_import)、012(notify + approvals)、013(asset_parent + data_scope)，启动自动执行，多实例 EXCLUSIVE 锁。
+
 ### 体验与门控
 - 前端 UI 改为**亮色主题**（Linear 风格），并修复 `index.css` 未被 `main.tsx` 引入导致生产构建样式全丢的根因。
 - 补齐 **viewer 角色对资产操作按钮的门控**（此前仅门控 admin+）；新增 **Webhooks 管理页**（此前仅 API）。

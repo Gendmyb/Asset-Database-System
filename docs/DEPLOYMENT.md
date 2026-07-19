@@ -13,6 +13,7 @@
 - [4. 方式 B：源码本地部署（裸机）](#4-方式-b源码本地部署裸机)
 - [5. 方式 C：单镜像 Docker](#5-方式-c单镜像-docker)
 - [6. 环境变量参考](#6-环境变量参考)
+- [6.x 企业化功能配置](#6x-企业化功能配置)
 - [7. 数据库说明](#7-数据库说明)
 - [8. 反向代理与 HTTPS](#8-反向代理与-https)
 - [9. 首次登录与初始化](#9-首次登录与初始化)
@@ -185,10 +186,78 @@ postgres://app_user:<PASSWORD>@<DB_HOST>:<DB_PORT>/assetdb?sslmode=<DB_SSLMODE>&
 
 ---
 
+## 6.x 企业化功能配置
+
+> Wave 1+2 引入的企业化能力（G1–G9）全部默认关闭，行为与 v0.2.0 一致；按需开启下列开关。所有 env 均为可选项。
+
+### AD/LDAP（G1）
+
+`LDAP_HOST` + `LDAP_BASE_DN` + `LDAP_BIND_DN` 三者齐全时自动启用 LDAP；任一缺失则系统以纯本地模式运行（不报错）。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `LDAP_HOST` | （空） | AD/LDAP 主机，例如 `ldap.corp.local` |
+| `LDAP_PORT` | `389` | 端口；LDAPS 一般用 `636` |
+| `LDAP_USE_TLS` | `false` | `true` 启用 StartTLS |
+| `LDAP_USE_SSL` | `false` | `true` 启用 LDAPS（ldaps://） |
+| `LDAP_BIND_DN` | （空） | 服务账号 DN，例如 `CN=svc-ldap,OU=Service,DC=corp,DC=local` |
+| `LDAP_BIND_PASSWORD` | （空） | 服务账号密码（不入日志/审计） |
+| `LDAP_BASE_DN` | （空） | 搜索基 DN，例如 `OU=Staff,DC=corp,DC=local` |
+| `LDAP_USER_FILTER` | `(&(objectClass=user)(sAMAccountName=%s))` | 用户查找过滤器，`%s` 占位用户名 |
+| `LDAP_SYNC_DISABLE_ONLY` | `false` | `true` 时同步仅禁用不存在账号，不创建新账号 |
+
+登录策略：本地账号优先，本地未命中走 LDAP bind 兜底；`admin` 账号永不被 LDAP 覆盖。手动同步：`POST /admin/ldap/sync`（admin+）。
+
+### 定时任务（G4 到期提醒）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `SCHEDULER_INTERVAL` | `off` | 调度间隔；`off` 不启动。支持 `30m`/`1h`/`24h` 等 Go duration，或纯数字秒 |
+| `SCHEDULER_WARRANTY_DAYS` | `30` | 保修到期提前预警天数 |
+| `SCHEDULER_LDAP_SYNC` | `false` | `true` 时调度循环中触发 LDAP 同步 |
+
+调度器扫描保修到期 / 领用逾期并发布事件（接入 G6 通知渠道时即会推送）。
+
+### 通知渠道（G6）
+
+总开关 `NOTIFY_ENABLE` 默认关闭。SMTP 渠道在 `SMTP_HOST` 配置后启用；任一机器人 webhook 配置即启用该渠道。机器人 webhook 强制 HTTPS 并做 SSRF 防护（拒绝内网/回环地址）。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `NOTIFY_ENABLE` | `false` | 通知总开关 |
+| `SMTP_HOST` | （空） | SMTP 主机 |
+| `SMTP_PORT` | `587` | SMTP 端口 |
+| `SMTP_USER` | （空） | SMTP 登录用户 |
+| `SMTP_PASSWORD` | （空） | SMTP 密码（不入日志/审计） |
+| `SMTP_FROM` | （空） | 发件人地址 |
+| `NOTIFY_DINGTALK_WEBHOOK` | （空） | 钉钉机器人 webhook（必须 https） |
+| `NOTIFY_WECOM_WEBHOOK` | （空） | 企业微信机器人 webhook（必须 https） |
+| `NOTIFY_FEISHU_WEBHOOK` | （空） | 飞书机器人 webhook（必须 https） |
+
+管理 API：`/admin/notify/rules`（规则 CRUD）、`/admin/notify/deliveries`（投递记录）。
+
+### 资产二维码（G3）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `EXTERNAL_URL` | （空） | 受信对外基础 URL，例如 `https://assets.example.com`。仅用于 `GET /assets/:id/qrcode?content=url` 模式拼详情页 URL；未配置时 url 模式返回 400，默认 QR 内容为 `asset_tag` |
+
+### 部门级行级权限（G9）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `DATA_SCOPE_DEPARTMENT` | `false` | `true` 启用部门级可见范围：super_admin 全局可见，manager 仅见本部门及子孙（ltree 子树）。`false` 时行为同 v0.2.0（org 级） |
+
+### 审批流（G7）
+
+无需 env，通过系统设置开关：`approval.assignment.enabled` / `approval.retirement.enabled` / `approval.maintenance.enabled`，默认全部关闭（领用/报废/维修直接执行，向后兼容）。开启后对应操作生成审批单，经 `/admin/approvals/:id/approve|reject` 流转后方可生效。
+
+---
+
 ## 7. 数据库说明
 
 - **schema**：所有表位于 `assets` schema（非 public）。
-- **迁移**：`assetserver/migrations/001-010*.sql`，启动时自动执行（见第 10 节）。当前最新为 `010_remove_procurement_and_user_softdelete.sql`。
+- **迁移**：`assetserver/migrations/001-013*.sql`，启动时自动执行（见第 10 节）。当前最新为 `013_asset_parent_and_data_scope.sql`。
 - **扩展**：`uuid-ossp`（UUID 生成）、`ltree`（组织树）。
 - **角色**：迁移创建 `app_writer`、`audit_reader`（预留，当前应用统一用 `app_user`）。
 - **连接池**：默认 5–25 连接，生命周期 1h、空闲 10m。PostgreSQL `max_connections` 建议 ≥ 50。
@@ -272,6 +341,9 @@ server {
 | 008_stocktake | 盘点计划/明细 |
 | 009_webhooks | webhook 订阅/投递记录 |
 | 010_remove_procurement_and_user_softdelete | 移除 procurement 状态、用户软删除(deleted_at) |
+| 011_ldap_and_user_import | LDAP 同步状态字段、用户导入批次记录 |
+| 012_notify_and_approvals | 通知规则/投递记录表、审批单表 |
+| 013_asset_parent_and_data_scope | 资产 parent_id 外设树、部门数据范围 ltree 索引 |
 
 ---
 
@@ -360,6 +432,10 @@ docker compose up -d --build      # 自动重建镜像 + 应用新迁移
 - [ ] 默认 `admin/admin123` 已改密
 - [ ] `DB_SSLMODE` 按需设为 `require`/`verify-full`
 - [ ] 服务器时区正确（影响折旧月份计算与时间戳显示）
+- [ ] 企业化开关按需开启：`LDAP_HOST`+`LDAP_BASE_DN`+`LDAP_BIND_DN`（G1）、`NOTIFY_ENABLE`+对应渠道（G6）、`SCHEDULER_INTERVAL`（G4）
+- [ ] `EXTERNAL_URL` 已配置为对外受信域名（启用 G3 url 模式二维码所需）
+- [ ] `DATA_SCOPE_DEPARTMENT` 按组织治理需要决定是否开启（G9）
+- [ ] 审批门 `approval.*.enabled` 按业务流程在系统设置中开启（G7，默认关闭）
 
 ---
 
