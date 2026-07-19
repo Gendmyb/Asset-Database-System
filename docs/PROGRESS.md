@@ -22,6 +22,7 @@
 | J | 终验双门禁（PM 代理 + 逻辑审计代理） | ✅ | 2026-07-19 |
 | K | 部署后修复（setup 脚本/SPA 回退/登录闪烁等） | ✅ | 2026-07-19 |
 | L | 企业化适配 Wave 1+2（G1–G9 缺口补齐） | ✅ | 2026-07-19 |
+| M | AD 域控接入企业化增强（Wave 3 T0–T10） | ✅ | 2026-07-19 |
 
 ## 明细
 
@@ -141,3 +142,31 @@
 - **G11 PDF 报表导出**：待启动，当前仅有 Excel/CSV 导出。
 - **G12 PWA（离线+移动端安装）**：待启动，当前仅有响应式移动端盘点。
 - **已知遗留**：企业化功能默认关闭，上线测试时需按 `docs/DEPLOYMENT.md` §6x 逐项开启 env 与系统设置开关；多实例部署时调度器（G4）建议仅单实例开启 `SCHEDULER_INTERVAL` 避免重复扫描。
+
+## AD 域控接入企业化增强 Wave 3 (M)
+
+> T0–T10 全量交付。按 `docs/ad-integration-multiagent-plan.md` 执行。
+> 提交：`a41d609`，分支 `feat/enterprise-adaptation`。
+
+| 任务 | 状态 | 说明 | 验证方式 |
+|---|---|---|---|
+| T0 契约冻结 | ✅ | 迁移 014 (ad_group_mappings + users 加列) + config 新键 + .env.example 补齐 | go build + go test 通过 |
+| T1 LDAP 客户端加固 | ✅ | ControlPaging 分页 / 按组过滤 / memberOf + userAccountControl / 防注入 | go test + ldap 单测 |
+| T2 组映射存储 + 角色解析 | ✅ | ad_group_repo.go CRUD + resolveRoleForGroups (多组取最高/self优先) | 10 用例全通过 |
+| T3 同步引擎重写 | ✅ | 按启用组圈人 → 组映射定角色 → manual_override 保护 → AD 禁用同步 | 编译通过 + 逻辑审查 |
+| T4 登录路径增强 | ✅ | SearchOne 返回 memberOf/uac → AD 禁用拒登 → EnsureUserRow 组映射 | go test auth 通过 |
+| T5 个人数据范围 ScopeSelf | ✅ | OrgScope + UserID + ScopeSelf → ClauseFor 子查询 → JWT data_scope 全链路 | go test repository 通过 |
+| T6 资产查询 self-scope 集成 | ✅ | orgScopeFromCtx 读 JWT data_scope → 所有资产查询统一过滤 | 通过 scope 测试 |
+| T7 目录集成 API | ✅ | ad_directory handler (组 CRUD + LDAP status + link/unlink AD) + 7 端点 admin+ | go build 通过 |
+| T8 用户 API 增强 | ✅ | UserRow 含 source/display_name/data_scope/manual_override/dn + update 自动 override | go test 通过 |
+| T9 目录集成前端 | ✅ | Directory.tsx (状态卡/同步/组映射 CRUD) + AdminLayout 新增页签 | npm run build 通过 |
+| T10 用户页前端增强 | ✅ | Users.tsx 来源徽标/显示名/链接AD/解除AD | tsc 0 errors |
+| 集成回归 | ✅ | go vet clean / go test 9/9 pass / go build binary / npm run build 764 modules | 全绿 |
+
+### Wave 3 交付说明
+
+- **全部新增默认关闭/向后兼容**：未启用 LDAP 时系统行为与 v0.2.0 完全一致
+- **安全基线**：LDAP filter 全量 EscapeFilter 防注入；凭据不入日志；默认角色最小权限；本地 admin 兜底永存
+- **组映射驱动**：按安全组圈人 + 组→角色映射 + 默认个人只读 (ScopeSelf)
+- **运维保护**：manual_override 防止 AD 同步覆盖超管手动调整；AD 禁用自动同步
+- **已知待后续**：真 SSO (OIDC/SAML)、Lark 登录、增量同步、多级 OU→组织树同步
