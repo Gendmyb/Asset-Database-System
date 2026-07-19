@@ -36,8 +36,26 @@ sudo -u postgres psql -c "ALTER USER app_user SUPERUSER CREATEROLE" 2>/dev/null 
 
 echo "  数据库就绪 ✓"
 
-# ---- Step 3: 启动应用 ----
-echo "[3/4] 启动 API Server..."
+# ---- Step 3: 构建前端 (如需) ----
+echo "[3/5] 构建前端..."
+if [ ! -d "$SCRIPT_DIR/assetserver/web/dist" ] || [ "$SCRIPT_DIR/web/src" -nt "$SCRIPT_DIR/assetserver/web/dist" ]; then
+    if command -v npm &>/dev/null; then
+        (cd "$SCRIPT_DIR/web" && npm run build) || echo "  ⚠ 前端构建失败，使用已有 dist"
+        cp -r "$SCRIPT_DIR/web/dist" "$SCRIPT_DIR/assetserver/web/dist"
+    else
+        echo "  ⚠ npm 未安装，跳过前端构建"
+    fi
+else
+    echo "  前端已是最新 ✓"
+fi
+
+# ---- Step 4: 构建后端 ----
+echo "[4/5] 构建 API Server..."
+export PATH="$HOME/.local/go/bin:$PATH"
+go build -C "$SCRIPT_DIR/assetserver" -ldflags="-s -w" -o bin/api-server ./cmd/api-server
+
+# ---- Step 5: 启动应用 ----
+echo "[5/5] 启动 API Server..."
 
 # 生成 JWT seed (如果还没有)
 if [ -z "$JWT_ED25519_SEED" ]; then
