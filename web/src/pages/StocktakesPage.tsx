@@ -13,6 +13,8 @@ import Select from '../components/ui/Select'
 import Spinner from '../components/ui/Spinner'
 import * as stocktakeApi from '../api/stocktake'
 import { getApiError } from '../lib/errors'
+import { downloadBlob } from '../lib/download'
+import { useAuthStore } from '../store/authStore'
 
 function fmtDate(d?: string): string {
   if (!d) return '—'
@@ -39,6 +41,8 @@ export default function StocktakesPage() {
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState<string | null>(null)
+  const role = useAuthStore((s) => s.user?.role)
+  const isAdmin = role === 'admin' || role === 'super_admin'
 
   const {
     register,
@@ -156,20 +160,25 @@ export default function StocktakesPage() {
           )
         }
         if (row.status === 'completed') {
-          return (
+          return isAdmin ? (
             <Button
               variant="secondary"
               style={{ fontSize: 12, padding: '4px 10px' }}
               onClick={(e) => {
                 e.stopPropagation()
                 stocktakeApi
-                  .getReport(row.id)
-                  .then(() => toast.info('报告功能开发中'))
+                  .exportReport(row.id)
+                  .then((blob) => {
+                    downloadBlob(blob, `stocktake_${row.plan_no || row.id}.csv`)
+                    toast.success('报告已导出')
+                  })
                   .catch((err) => toast.error(getApiError(err)))
               }}
             >
-              查看报告
+              导出报告
             </Button>
+          ) : (
+            <span style={{ fontSize: 12, color: 'var(--text-quaternary)' }}>已完成</span>
           )
         }
         return (

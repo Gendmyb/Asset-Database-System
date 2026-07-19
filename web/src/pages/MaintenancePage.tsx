@@ -12,6 +12,7 @@ import FormField from '../components/ui/FormField'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Spinner from '../components/ui/Spinner'
 import * as maintenanceApi from '../api/maintenance'
+import * as assetsApi from '../api/assets'
 import { getApiError } from '../lib/errors'
 
 function fmtDate(d: string) {
@@ -27,7 +28,7 @@ function fmtDate(d: string) {
   }
 }
 
-type CreateFormData = { title: string; category: string; description: string }
+type CreateFormData = { asset_id: string; title: string; category: string; description: string }
 type CompleteFormData = { resolution: string; cost: string }
 
 export default function MaintenancePage() {
@@ -50,8 +51,17 @@ export default function MaintenancePage() {
 
   const rows = data?.data ?? []
 
+  const { data: assetsData } = useQuery({
+    queryKey: ['assets', 'for-maintenance'],
+    queryFn: () => assetsApi.list({ limit: 200 }),
+  })
+  const assetOptions = (assetsData?.data ?? []).map((a: any) => ({
+    value: a.id,
+    label: `${a.name}${a.asset_tag ? ` (${a.asset_tag})` : ''}`,
+  }))
+
   const createForm = useForm<CreateFormData>({
-    defaultValues: { title: '', category: 'repair', description: '' },
+    defaultValues: { asset_id: '', title: '', category: 'repair', description: '' },
   })
 
   const completeForm = useForm<CompleteFormData>({
@@ -61,7 +71,7 @@ export default function MaintenancePage() {
   const createMutation = useMutation({
     mutationFn: (formData: CreateFormData) =>
       maintenanceApi.create({
-        asset_id: '',
+        asset_id: formData.asset_id,
         title: formData.title,
         category: formData.category,
         description: formData.description || undefined,
@@ -108,7 +118,7 @@ export default function MaintenancePage() {
 
   const columns: Column<maintenanceApi.MaintenanceTicket>[] = [
     {
-      key: 'ticket_number',
+      key: 'order_no',
       label: '工单号',
       render: (row) => (
         <span
@@ -121,7 +131,7 @@ export default function MaintenancePage() {
             color: 'var(--text-secondary)',
           }}
         >
-          {row.ticket_number}
+          {row.order_no}
         </span>
       ),
     },
@@ -300,6 +310,30 @@ export default function MaintenancePage() {
       {/* Create Modal */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="新建维修保养工单" width="480px">
         <form onSubmit={createForm.handleSubmit((data) => createMutation.mutate(data))}>
+          <FormField label="资产" required>
+            <select
+              {...createForm.register('asset_id', { required: true })}
+              style={{
+                width: '100%',
+                padding: '7px 10px',
+                borderRadius: 5,
+                border: '1px solid var(--border-default)',
+                background: 'rgba(255,255,255,0.02)',
+                color: 'var(--text-primary)',
+                fontSize: 13,
+                outline: 'none',
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="">选择资产...</option>
+              {assetOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </FormField>
           <Input
             label="标题"
             placeholder="例如：更换显示器屏幕"
@@ -398,7 +432,7 @@ export default function MaintenancePage() {
         open={!!cancelingTicket}
         onClose={() => setCancelingTicket(null)}
         title="取消工单"
-        description={`确认取消工单 ${cancelingTicket?.ticket_number || ''} 吗？此操作不可撤销。`}
+        description={`确认取消工单 ${cancelingTicket?.order_no || ''} 吗？此操作不可撤销。`}
         confirmLabel="确认取消"
         danger
         onConfirm={() => {

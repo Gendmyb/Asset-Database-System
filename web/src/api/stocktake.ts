@@ -2,6 +2,7 @@ import api from './client'
 
 export interface StocktakePlan {
   id: string
+  plan_no?: string
   name: string
   status: 'draft' | 'in_progress' | 'completed' | 'canceled'
   scope_location_id?: string
@@ -124,7 +125,7 @@ export function addSurplus(
   data: { surplus_note: string }
 ): Promise<unknown> {
   return api
-    .post(`/stocktakes/${planId}/surplus`, data)
+    .post(`/stocktakes/${planId}/items`, data)
     .then((r) => r.data)
 }
 
@@ -139,4 +140,10 @@ export function getReport(
       params: format ? { format } : undefined,
     })
     .then((r) => r.data?.data || r.data)
+}
+
+export function exportReport(planId: string): Promise<Blob> {
+  return api
+    .get(`/stocktakes/${planId}/report/export`, { responseType: 'blob' })
+    .then((r) => r.data)
 }

@@ -232,7 +232,7 @@ func (s *ReportService) GetAssignmentsDue(ctx context.Context, q repository.DBTX
 		WHERE asgn.org_id = $1
 		  AND asgn.status = 'active'
 		  AND asgn.assignment_type = 'temporary'
-		  AND asgn.due_date < CURRENT_DATE + $2
+		  AND asgn.due_date < CURRENT_DATE + $2::int
 		ORDER BY asgn.due_date ASC`
 
 	rows, err := q.Query(ctx, query, orgID, days)

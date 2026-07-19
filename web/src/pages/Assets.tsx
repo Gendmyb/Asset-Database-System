@@ -25,8 +25,8 @@ export default function Assets() {
   const [assignAsset, setAssignAsset] = useState<assetsApi.Asset | null>(null)
 
   const { data: usersData } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => usersApi.list(),
+    queryKey: ['users', 'assignable'],
+    queryFn: () => usersApi.listAssignable(),
     staleTime: 60000,
   })
   const { data: locationsData } = useQuery({

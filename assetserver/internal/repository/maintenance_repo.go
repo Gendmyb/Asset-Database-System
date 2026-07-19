@@ -44,6 +44,8 @@ type MaintenanceOrder struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 	Version     int        `json:"version"`
+	AssetName   *string    `json:"asset_name,omitempty"`
+	AssetTag    *string    `json:"asset_tag,omitempty"`
 }
 
 // MaintenanceFilter 工单查询过滤条件
@@ -102,15 +104,18 @@ func (r *MaintenanceRepo) CreateMaintenanceOrder(ctx context.Context, q DBTX, mo
 func (r *MaintenanceRepo) GetMaintenanceOrder(ctx context.Context, q DBTX, id string, orgID string) (*MaintenanceOrder, error) {
 	var mo MaintenanceOrder
 	err := q.QueryRow(ctx,
-		`SELECT id, order_no, asset_id, org_id, category, status,
-		 title, description, reported_by, assignee, vendor, cost, resolution,
-		 prev_status, started_at, finished_at, created_at, updated_at, version
-		 FROM assets.maintenance_orders
-		 WHERE id = $1 AND org_id = $2`, id, orgID,
+		`SELECT m.id, m.order_no, m.asset_id, m.org_id, m.category, m.status,
+		 m.title, m.description, m.reported_by, m.assignee, m.vendor, m.cost, m.resolution,
+		 m.prev_status, m.started_at, m.finished_at, m.created_at, m.updated_at, m.version,
+		 a.name AS asset_name, a.asset_tag AS asset_tag
+		 FROM assets.maintenance_orders m
+		 LEFT JOIN assets.assets a ON a.id = m.asset_id
+		 WHERE m.id = $1 AND m.org_id = $2`, id, orgID,
 	).Scan(&mo.ID, &mo.OrderNo, &mo.AssetID, &mo.OrgID, &mo.Category, &mo.Status,
 		&mo.Title, &mo.Description, &mo.ReportedBy, &mo.Assignee, &mo.Vendor,
 		&mo.Cost, &mo.Resolution, &mo.PrevStatus,
 		&mo.StartedAt, &mo.FinishedAt, &mo.CreatedAt, &mo.UpdatedAt, &mo.Version,
+		&mo.AssetName, &mo.AssetTag,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, fmt.Errorf("maintenance order not found")
@@ -201,25 +206,28 @@ func (r *MaintenanceRepo) ListMaintenanceOrders(ctx context.Context, q DBTX, f M
 		f.Limit = 50
 	}
 
-	query := `SELECT id, order_no, asset_id, org_id, category, status,
-		title, description, reported_by, assignee, vendor, cost, resolution,
-		prev_status, started_at, finished_at, created_at, updated_at, version
-		FROM assets.maintenance_orders WHERE org_id = $1`
+	query := `SELECT m.id, m.order_no, m.asset_id, m.org_id, m.category, m.status,
+		m.title, m.description, m.reported_by, m.assignee, m.vendor, m.cost, m.resolution,
+		m.prev_status, m.started_at, m.finished_at, m.created_at, m.updated_at, m.version,
+		a.name AS asset_name, a.asset_tag AS asset_tag
+		FROM assets.maintenance_orders m
+		LEFT JOIN assets.assets a ON a.id = m.asset_id
+		WHERE m.org_id = $1`
 	args := []interface{}{f.OrgID}
 	argIdx := 2
 
 	if f.Status != "" {
-		query += fmt.Sprintf(" AND status = $%d", argIdx)
+		query += fmt.Sprintf(" AND m.status = $%d", argIdx)
 		args = append(args, f.Status)
 		argIdx++
 	}
 	if f.Category != "" {
-		query += fmt.Sprintf(" AND category = $%d", argIdx)
+		query += fmt.Sprintf(" AND m.category = $%d", argIdx)
 		args = append(args, f.Category)
 		argIdx++
 	}
 	if f.AssetID != "" {
-		query += fmt.Sprintf(" AND asset_id = $%d", argIdx)
+		query += fmt.Sprintf(" AND m.asset_id = $%d", argIdx)
 		args = append(args, f.AssetID)
 		argIdx++
 	}
@@ -228,13 +236,13 @@ func (r *MaintenanceRepo) ListMaintenanceOrders(ctx context.Context, q DBTX, f M
 	if f.Cursor != "" {
 		decoded, err := decodeMaintenanceCursor(f.Cursor)
 		if err == nil {
-			query += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", argIdx, argIdx+1)
+			query += fmt.Sprintf(" AND (m.created_at, m.id) < ($%d, $%d)", argIdx, argIdx+1)
 			args = append(args, decoded.CreatedAt, decoded.ID)
 			argIdx += 2
 		}
 	}
 
-	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", argIdx)
+	query += fmt.Sprintf(" ORDER BY m.created_at DESC, m.id DESC LIMIT $%d", argIdx)
 	args = append(args, f.Limit+1)
 
 	rows, err := q.Query(ctx, query, args...)
@@ -250,7 +258,8 @@ func (r *MaintenanceRepo) ListMaintenanceOrders(ctx context.Context, q DBTX, f M
 			&mo.Category, &mo.Status, &mo.Title, &mo.Description,
 			&mo.ReportedBy, &mo.Assignee, &mo.Vendor, &mo.Cost, &mo.Resolution,
 			&mo.PrevStatus, &mo.StartedAt, &mo.FinishedAt,
-			&mo.CreatedAt, &mo.UpdatedAt, &mo.Version); err != nil {
+			&mo.CreatedAt, &mo.UpdatedAt, &mo.Version,
+			&mo.AssetName, &mo.AssetTag); err != nil {
 			return nil, "", false, fmt.Errorf("scan maintenance order: %w", err)
 		}
 		orders = append(orders, mo)

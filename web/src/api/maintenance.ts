@@ -2,7 +2,7 @@ import api from './client'
 
 export interface MaintenanceTicket {
   id: string
-  ticket_number: string
+  order_no: string
   asset_id: string
   asset_name?: string
   asset_tag?: string
@@ -43,25 +43,25 @@ export interface PaginatedResponse<T> {
 }
 
 export function create(data: CreateMaintenanceData): Promise<MaintenanceTicket> {
-  return api.post('/maintenance', data).then((r) => r.data)
+  return api.post('/maintenance-orders', data).then((r) => r.data)
 }
 
 export function list(params?: MaintenanceListParams): Promise<PaginatedResponse<MaintenanceTicket>> {
-  return api.get('/maintenance', { params }).then((r) => r.data)
+  return api.get('/maintenance-orders', { params }).then((r) => r.data)
 }
 
 export function getById(id: string): Promise<MaintenanceTicket> {
-  return api.get(`/maintenance/${id}`).then((r) => r.data?.data || r.data)
+  return api.get(`/maintenance-orders/${id}`).then((r) => r.data?.data || r.data)
 }
 
 export function start(id: string): Promise<MaintenanceTicket> {
-  return api.post(`/maintenance/${id}/start`).then((r) => r.data)
+  return api.post(`/maintenance-orders/${id}/start`).then((r) => r.data)
 }
 
 export function complete(id: string, data: CompleteMaintenanceData): Promise<MaintenanceTicket> {
-  return api.post(`/maintenance/${id}/complete`, data).then((r) => r.data)
+  return api.post(`/maintenance-orders/${id}/complete`, data).then((r) => r.data)
 }
 
 export function cancel(id: string): Promise<MaintenanceTicket> {
-  return api.post(`/maintenance/${id}/cancel`).then((r) => r.data)
+  return api.post(`/maintenance-orders/${id}/cancel`).then((r) => r.data)
 }

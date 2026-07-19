@@ -37,7 +37,7 @@ export default function AssignDialog({
   useEffect(() => {
     if (open) {
       usersApi
-        .list()
+        .listAssignable()
         .then((users) => {
           setUserOptions(
             users.map((u: any) => ({

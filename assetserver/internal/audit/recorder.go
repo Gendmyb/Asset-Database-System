@@ -51,11 +51,20 @@ func Record(ctx context.Context, tx pgx.Tx, e Entry) error {
 	newHash := hex.EncodeToString(h.Sum(nil))
 
 	// 3. INSERT INTO audit_log
+	// asset_id / user_id 均为可空 UUID 列; 空串需转为 NULL, 否则 "invalid input syntax for type uuid"
+	recordIDArg := interface{}(e.RecordID)
+	if e.RecordID == "" {
+		recordIDArg = nil
+	}
+	actorIDArg := interface{}(e.ActorID)
+	if e.ActorID == "" {
+		actorIDArg = nil
+	}
 	_, err = tx.Exec(ctx,
 		`INSERT INTO assets.audit_log
 		 (asset_id, org_id, user_id, action, metadata, prev_hash, hash)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		e.RecordID, e.OrgID, e.ActorID, e.Action,
+		recordIDArg, e.OrgID, actorIDArg, e.Action,
 		entryJSON, prevHash, newHash,
 	)
 	if err != nil {

@@ -6,6 +6,7 @@ import * as reportsApi from '../api/reports'
 import * as assetsApi from '../api/assets'
 import { downloadBlob } from '../lib/download'
 import { getApiError } from '../lib/errors'
+import { useAuthStore } from '../store/authStore'
 
 const KPI_CARD: React.CSSProperties = {
   background: 'var(--bg-surface)',
@@ -24,6 +25,8 @@ function KpiCard({ label, value, color }: { label: string; value: string; color:
 }
 
 export default function ReportsPage() {
+  const role = useAuthStore((s) => s.user?.role)
+  const isAdmin = role === 'admin' || role === 'super_admin'
 
   const { data: summaryData, isLoading: summaryLoading } = useQuery({
     queryKey: ['reports', 'summary'],
@@ -92,19 +95,23 @@ export default function ReportsPage() {
           <p style={{ fontSize: 13, color: 'var(--text-tertiary)' }}>资产统计与折旧报表</p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <Button
-            variant="secondary"
-            loading={exportAssetsMutation.isPending}
-            onClick={() => exportAssetsMutation.mutate()}
-          >
-            导出资产 CSV
-          </Button>
-          <Button
-            loading={exportDepreciationMutation.isPending}
-            onClick={() => exportDepreciationMutation.mutate()}
-          >
-            导出折旧报表 CSV
-          </Button>
+          {isAdmin && (
+            <>
+              <Button
+                variant="secondary"
+                loading={exportAssetsMutation.isPending}
+                onClick={() => exportAssetsMutation.mutate()}
+              >
+                导出资产 CSV
+              </Button>
+              <Button
+                loading={exportDepreciationMutation.isPending}
+                onClick={() => exportDepreciationMutation.mutate()}
+              >
+                导出折旧报表 CSV
+              </Button>
+            </>
+          )}
         </div>
       </div>
 

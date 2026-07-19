@@ -22,6 +22,7 @@ const navItems: NavItem[] = [
 
 export default function Layout() {
   const { user, logout } = useAuthStore()
+  const refreshToken = useAuthStore((s) => s.refreshToken)
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const [demoMode, setDemoMode] = useState(false)
@@ -163,8 +164,19 @@ export default function Layout() {
             </div>
             <button
               onClick={() => {
-                logout()
-                navigate('/login')
+                if (refreshToken) {
+                  import('../api/auth')
+                    .then((authApi) =>
+                      authApi.logout(refreshToken).catch(() => undefined)
+                    )
+                    .finally(() => {
+                      logout()
+                      navigate('/login')
+                    })
+                } else {
+                  logout()
+                  navigate('/login')
+                }
               }}
               style={{
                 background: 'none',

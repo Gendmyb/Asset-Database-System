@@ -389,6 +389,7 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	admin.POST("/stocktakes", stocktakeH.CreatePlan)
 	viewer.GET("/stocktakes", stocktakeH.ListPlans)
 	viewer.GET("/stocktakes/:id", stocktakeH.GetPlan)
+	viewer.GET("/stocktakes/:id/items", stocktakeH.ListItems)
 	admin.POST("/stocktakes/:id/start", stocktakeH.StartPlan)
 	manager.PUT("/stocktakes/:id/items/:itemId", stocktakeH.UpdateItem)
 	manager.POST("/stocktakes/:id/items", stocktakeH.AddSurplusItem)

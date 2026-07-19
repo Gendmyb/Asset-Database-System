@@ -15,6 +15,7 @@ import * as usersApi from '../../api/users'
 import * as maintenanceApi from '../../api/maintenance'
 import { getApiError } from '../../lib/errors'
 import { toast as sonnerToast } from 'sonner'
+import { useAuthStore } from '../../store/authStore'
 
 const LIFECYCLE_LABELS: Record<string, string> = {
   procurement: '采购中',
@@ -64,6 +65,8 @@ export default function AssetDetailPanel({
   const [editMode, setEditMode] = useState(false)
   const [error, setError] = useState('')
   const [assignedUser, setAssignedUser] = useState<string | null>(null)
+  const role = useAuthStore((s) => s.user?.role)
+  const isAdmin = role === 'admin' || role === 'super_admin'
   const [form, setForm] = useState({
     name: asset.name,
     manufacturer: asset.manufacturer || '',
@@ -546,16 +549,18 @@ export default function AssetDetailPanel({
           >
             报修
           </Button>
-          <Button
-            variant="danger"
-            style={{ flex: 1 }}
-            onClick={() => {
-              setRetireReason('')
-              setShowRetireDialog(true)
-            }}
-          >
-            报废
-          </Button>
+          {isAdmin && (
+            <Button
+              variant="danger"
+              style={{ flex: 1 }}
+              onClick={() => {
+                setRetireReason('')
+                setShowRetireDialog(true)
+              }}
+            >
+              报废
+            </Button>
+          )}
         </div>
       )}
 

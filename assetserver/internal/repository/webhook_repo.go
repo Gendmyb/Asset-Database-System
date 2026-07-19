@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 )
 
 // WebhookEndpointRow represents a webhook endpoint row
@@ -47,7 +46,7 @@ func (r *WebhookRepo) CreateEndpoint(ctx context.Context, q DBTX, row *WebhookEn
 	err := q.QueryRow(ctx,
 		`INSERT INTO assets.webhook_endpoints (id, org_id, url, secret, events, active)
 		 VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-		id, row.OrgID, row.URL, row.Secret, pq.Array(row.Events), row.Active,
+		id, row.OrgID, row.URL, row.Secret, row.Events, row.Active,
 	).Scan(&id)
 	if err != nil {
 		return "", fmt.Errorf("create webhook endpoint: %w", err)
@@ -65,7 +64,7 @@ func (r *WebhookRepo) GetEndpoint(ctx context.Context, q DBTX, id, orgID string)
 		        to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 		 FROM assets.webhook_endpoints
 		 WHERE id=$1 AND org_id=$2`, id, orgID,
-	).Scan(&row.ID, &row.OrgID, &row.URL, &row.Secret, pq.Array(&events),
+	).Scan(&row.ID, &row.OrgID, &row.URL, &row.Secret, &events,
 		&row.Active, &row.CreatedAt, &row.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get webhook endpoint: %w", err)
@@ -91,7 +90,7 @@ func (r *WebhookRepo) ListEndpoints(ctx context.Context, q DBTX, orgID string) (
 	for rows.Next() {
 		var row WebhookEndpointRow
 		var events []string
-		if err := rows.Scan(&row.ID, &row.OrgID, &row.URL, &row.Secret, pq.Array(&events),
+		if err := rows.Scan(&row.ID, &row.OrgID, &row.URL, &row.Secret, &events,
 			&row.Active, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan webhook endpoint: %w", err)
 		}
@@ -121,7 +120,7 @@ func (r *WebhookRepo) UpdateEndpoint(ctx context.Context, q DBTX, id, orgID stri
 		`UPDATE assets.webhook_endpoints
 		 SET url=$1, events=$2, active=$3, updated_at=now()
 		 WHERE id=$4 AND org_id=$5`,
-		existing.URL, pq.Array(existing.Events), existing.Active, id, orgID)
+		existing.URL, existing.Events, existing.Active, id, orgID)
 	if err != nil {
 		return fmt.Errorf("update webhook endpoint: %w", err)
 	}
@@ -158,7 +157,7 @@ func (r *WebhookRepo) ListActiveByEvent(ctx context.Context, q DBTX, eventType s
 	for rows.Next() {
 		var row WebhookEndpointRow
 		var events []string
-		if err := rows.Scan(&row.ID, &row.OrgID, &row.URL, &row.Secret, pq.Array(&events),
+		if err := rows.Scan(&row.ID, &row.OrgID, &row.URL, &row.Secret, &events,
 			&row.Active, &row.CreatedAt, &row.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan webhook endpoint: %w", err)
 		}

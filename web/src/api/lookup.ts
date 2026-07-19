@@ -6,9 +6,9 @@ export interface LookupItem {
 }
 
 export function assetTypes(): Promise<LookupItem[]> {
-  return api.get('/lookup/asset-types').then((r) => r.data?.data || r.data)
+  return api.get('/asset-types').then((r) => r.data?.data || r.data)
 }
 
 export function locations(): Promise<LookupItem[]> {
-  return api.get('/lookup/locations').then((r) => r.data?.data || r.data)
+  return api.get('/locations').then((r) => r.data?.data || r.data)
 }

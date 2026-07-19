@@ -56,8 +56,8 @@ export default function Users() {
   })
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, disabled }: { id: string; disabled: boolean }) =>
-      usersApi.update(id, { disabled }),
+    mutationFn: ({ id, status }: { id: string; status: string }) =>
+      usersApi.update(id, { status }),
     onSuccess: () => {
       toast.success('状态已更新')
       queryClient.invalidateQueries({ queryKey: ['admin', 'users'] })
@@ -89,8 +89,9 @@ export default function Users() {
             updateRoleMutation.mutate({ id: row.id, role: e.target.value })
           }
           options={[
+            { value: 'super_admin', label: '超级管理员' },
             { value: 'admin', label: '管理员' },
-            { value: 'user', label: '用户' },
+            { value: 'manager', label: '经办人' },
             { value: 'viewer', label: '只读' },
           ]}
           style={{
@@ -117,10 +118,10 @@ export default function Users() {
       ),
     },
     {
-      key: 'disabled',
+      key: 'status',
       label: '状态',
       render: (row: any) => (
-        <Badge status={row.disabled ? 'retired' : 'available'} />
+        <Badge status={row.status === 'disabled' ? 'retired' : 'available'} />
       ),
     },
     {
@@ -131,11 +132,14 @@ export default function Users() {
           <Button
             variant="ghost"
             onClick={() =>
-              toggleMutation.mutate({ id: row.id, disabled: !row.disabled })
+              toggleMutation.mutate({
+                id: row.id,
+                status: row.status === 'disabled' ? 'active' : 'disabled',
+              })
             }
             style={{ fontSize: 12, padding: '4px 8px' }}
           >
-            {row.disabled ? '启用' : '禁用'}
+            {row.status === 'disabled' ? '启用' : '禁用'}
           </Button>
           <Button
             variant="ghost"
@@ -235,7 +239,7 @@ function CreateUserModal({
   onSubmit: (data: CreateUserForm) => void
 }) {
   const { register, handleSubmit, reset } = useForm<CreateUserForm>({
-    defaultValues: { role: 'user' },
+    defaultValues: { role: 'manager' },
   })
 
   return (
@@ -279,7 +283,7 @@ function CreateUserModal({
             }}
           >
             <option value="admin">管理员</option>
-            <option value="user">用户</option>
+            <option value="manager">经办人</option>
             <option value="viewer">只读</option>
           </select>
         </FormField>

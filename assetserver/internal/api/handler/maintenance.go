@@ -45,6 +45,8 @@ type maintenanceOrderResponse struct {
 	CreatedAt   string     `json:"created_at"`
 	UpdatedAt   string     `json:"updated_at"`
 	Version     int        `json:"version"`
+	AssetName   *string    `json:"asset_name,omitempty"`
+	AssetTag    *string    `json:"asset_tag,omitempty"`
 }
 
 func moToResponse(mo *repository.MaintenanceOrder) maintenanceOrderResponse {
@@ -66,6 +68,8 @@ func moToResponse(mo *repository.MaintenanceOrder) maintenanceOrderResponse {
 		CreatedAt:   mo.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:   mo.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 		Version:     mo.Version,
+		AssetName:   mo.AssetName,
+		AssetTag:    mo.AssetTag,
 	}
 	if mo.StartedAt != nil {
 		s := mo.StartedAt.Format("2006-01-02T15:04:05Z")

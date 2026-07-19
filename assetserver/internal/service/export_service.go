@@ -199,8 +199,8 @@ func (s *ExportService) ExportStocktakeReportCSV(ctx context.Context, q reposito
 		LEFT JOIN assets.assets a ON si.asset_id = a.id
 		LEFT JOIN assets.asset_types at ON a.type_id = at.id
 		LEFT JOIN assets.locations l ON a.location_id = l.id
-		LEFT JOIN assets.users u ON si.checked_by = u.id::text
-		WHERE si.plan_id = $1
+		LEFT JOIN assets.users u ON si.checked_by = u.id
+		WHERE si.plan_id = $1::uuid
 		ORDER BY a.asset_tag`
 	args := []interface{}{planID}
 	_ = orgID // 通过 plan_id 关联，无需 orgID 过滤（盘点计划已隔离）

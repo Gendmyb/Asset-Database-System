@@ -35,7 +35,7 @@ export interface UserProfile {
 }
 
 export interface ChangePasswordRequest {
-  current_password: string
+  old_password: string
   new_password: string
 }
 
@@ -43,8 +43,8 @@ export function login(data: LoginRequest): Promise<LoginResponse> {
   return api.post('/auth/login', data).then((r) => r.data)
 }
 
-export function logout(): Promise<void> {
-  return api.post('/auth/logout').then((r) => r.data)
+export function logout(refreshToken: string): Promise<void> {
+  return api.post('/auth/logout', { refresh_token: refreshToken }).then((r) => r.data)
 }
 
 export function refresh(data: RefreshRequest): Promise<RefreshResponse> {
@@ -52,9 +52,9 @@ export function refresh(data: RefreshRequest): Promise<RefreshResponse> {
 }
 
 export function me(): Promise<UserProfile> {
-  return api.get('/auth/me').then((r) => r.data)
+  return api.get('/me').then((r) => r.data?.data || r.data)
 }
 
 export function changePassword(data: ChangePasswordRequest): Promise<void> {
-  return api.put('/auth/change-password', data).then((r) => r.data)
+  return api.put('/me/password', data).then((r) => r.data)
 }

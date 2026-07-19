@@ -226,6 +226,18 @@ func (h *StocktakeHandler) UpdateItem(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": "ok"})
 }
 
+// ListItems GET /stocktakes/:id/items
+func (h *StocktakeHandler) ListItems(c *gin.Context) {
+	result := c.Query("result")
+	search := c.Query("search")
+	items, err := h.svc.GetItems(c.Request.Context(), h.pool, c.Param("id"), result, search)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": items})
+}
+
 // AddSurplusItem POST /stocktakes/:id/items
 func (h *StocktakeHandler) AddSurplusItem(c *gin.Context) {
 	var input struct {
