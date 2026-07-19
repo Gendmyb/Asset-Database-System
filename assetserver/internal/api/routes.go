@@ -12,6 +12,7 @@ import (
 
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/handler"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/api/middleware"
+	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/audit"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/repository"
 	"github.com/Gendmyb/Asset-Database-System/assetserver/internal/service"
 	"github.com/gin-gonic/gin"
@@ -133,11 +134,19 @@ func registerProductionRoutes(v1 *gin.RouterGroup, pool *pgxpool.Pool) {
 	manager.PUT("/assets/:id", assetV2.UpdateAsset)
 	manager.DELETE("/assets/:id", assetV2.DeleteAsset)
 	manager.POST("/assets/:id/transition", assetV2.LifecycleTransition)
-
-	// 历史记录 (viewer+)
-	viewer.GET("/assets/:id/history", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"data": []interface{}{}})
-	})
+		// 历史记录 (viewer+)
+		viewer.GET("/assets/:id/history", func(c *gin.Context) {
+			orgID := c.GetString("org_id")
+			history, err := audit.QueryHistory(c.Request.Context(), pool, c.Param("id"), orgID, 50)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+			if history == nil {
+				history = []audit.AuditLogRow{}
+			}
+			c.JSON(http.StatusOK, gin.H{"data": history})
+		})
 
 	// 领用管理 (manager+)
 	manager.POST("/assets/:id/assign", assignmentH.Assign)

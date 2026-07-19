@@ -108,6 +108,17 @@ Base: `/api/v1`。Auth: `Bearer <access_token>`（Header）。15min TTL，过期
 | PUT | /admin/users/:id | admin+ |
 | POST | /admin/users/:id/reset-password | admin+ |
 
+## 杂项
+
+| 方法 | 路径 | Auth | 说明 |
+|---|---|---|---|
+| GET | /healthz | 无 | 健康检查 |
+| GET | /readyz | 无 | 就绪检查 `{mode:"demo"|"production"}` |
+| GET | /dashboard/overview | Bearer (viewer+) | 仪表盘聚合数据 |
+| GET/POST | /organizations | Bearer (admin+) | 组织管理 |
+| GET | /organizations/:id | Bearer (admin+) | 组织详情 |
+| GET | /organizations/:id/subtree | Bearer (admin+) | 子组织树 |
+
 ## 统一响应格式
 
 ```json
