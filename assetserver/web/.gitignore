@@ -1,0 +1,3 @@
+# Allow placeholder for Go embed to work when dist hasn't been built
+!dist/
+!dist/index.html
